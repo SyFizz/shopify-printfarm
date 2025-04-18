@@ -280,3 +280,38 @@ class OrderController:
                 counts["Total"] += count
         
         return counts
+
+    def get_orders_waiting_for_product(self, product, color):
+        """
+        Récupère les commandes qui attendent un produit spécifique, classées par ancienneté
+        
+        Args:
+            product (str): Nom du produit
+            color (str): Couleur du produit
+            
+        Returns:
+            list: Liste des commandes triées par date (plus ancienne en premier)
+        """
+        waiting_orders = []
+        
+        # Récupérer toutes les commandes qui ont ce produit avec statut "À imprimer"
+        query = """
+            SELECT o.id, o.date, o.client, oi.quantity
+            FROM orders o
+            JOIN order_items oi ON o.id = oi.order_id
+            WHERE oi.product = ? AND oi.color = ? AND oi.status = 'À imprimer'
+            ORDER BY o.date ASC
+        """
+        
+        self.db.cursor.execute(query, (product, color))
+        rows = self.db.cursor.fetchall()
+        
+        for row in rows:
+            waiting_orders.append({
+                'id': row['id'],
+                'date': row['date'],
+                'client': row['client'],
+                'quantity': row['quantity']
+            })
+        
+        return waiting_orders

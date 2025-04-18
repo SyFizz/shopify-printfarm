@@ -488,16 +488,11 @@ class MainWindow(QMainWindow):
                 return
         
         # Créer un nouvel onglet de plan d'impression
-        print_tab = QWidget()
-        
-        # Placeholder pour le contenu
-        layout = QVBoxLayout(print_tab)
-        label = QLabel("Plan d'impression (à implémenter)")
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+        from views.print_plan_view import PrintPlanWidget
+        print_plan_widget = PrintPlanWidget(self)
         
         # Ajouter l'onglet
-        self.tabs.addTab(print_tab, "Plan d'impression")
+        self.tabs.addTab(print_plan_widget, "Plan d'impression")
         self.tabs.setCurrentIndex(self.tabs.count() - 1)
     
     def open_inventory(self):

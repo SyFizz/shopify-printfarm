@@ -59,16 +59,96 @@ class Database:
         )
         ''')
         
-        # Table d'inventaire
+        # Table d'inventaire mise à jour pour inclure les composants
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS inventory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product TEXT NOT NULL,
             color TEXT NOT NULL,
+            component TEXT,
             stock INTEGER DEFAULT 0,
             alert_threshold INTEGER DEFAULT 3,
-            UNIQUE(product, color)
+            UNIQUE(product, color, component)
         )
         ''')
+        
+        # Table des composants de produits
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS product_components (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_name TEXT NOT NULL,
+            component_name TEXT NOT NULL,
+            quantity INTEGER DEFAULT 1,
+            UNIQUE(product_name, component_name)
+        )
+        ''')
+        
+        # Table des variantes de couleurs
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS color_variants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            base_color TEXT NOT NULL,
+            variant_name TEXT NOT NULL,
+            hex_code TEXT NOT NULL,
+            UNIQUE(variant_name)
+        )
+        ''')
+        
+        # Table des prévisions d'inventaire
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS inventory_forecast (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product TEXT NOT NULL,
+            color TEXT NOT NULL,
+            component TEXT,
+            avg_monthly_sales REAL DEFAULT 0,
+            recommended_stock INTEGER DEFAULT 0,
+            trend_factor REAL DEFAULT 1.0,
+            UNIQUE(product, color, component)
+        )
+        ''')
+        
+        self.conn.commit()
+        
+    def migrate_inventory_data(self):
+        """Migration des données d'inventaire vers le nouveau schéma avec composants"""
+        # Vérifier si la colonne component existe déjà dans la table inventory
+        self.cursor.execute("PRAGMA table_info(inventory)")
+        columns = self.cursor.fetchall()
+        column_names = [column['name'] for column in columns]
+        
+        # Si la migration est déjà faite, ne rien faire
+        if 'component' in column_names:
+            return
+            
+        # Sauvegarde des données actuelles
+        self.cursor.execute("SELECT * FROM inventory")
+        old_inventory = self.cursor.fetchall()
+        
+        # Renommer l'ancienne table
+        self.cursor.execute("ALTER TABLE inventory RENAME TO inventory_old")
+        
+        # Créer la nouvelle table
+        self.cursor.execute('''
+        CREATE TABLE inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product TEXT NOT NULL,
+            color TEXT NOT NULL,
+            component TEXT,
+            stock INTEGER DEFAULT 0,
+            alert_threshold INTEGER DEFAULT 3,
+            UNIQUE(product, color, component)
+        )
+        ''')
+        
+        # Migrer les données
+        for item in old_inventory:
+            self.cursor.execute('''
+            INSERT INTO inventory (product, color, stock, alert_threshold)
+            VALUES (?, ?, ?, ?)
+            ''', (item['product'], item['color'], item['stock'], item['alert_threshold']))
+        
+        # Supprimer l'ancienne table
+        self.cursor.execute("DROP TABLE inventory_old")
         
         self.conn.commit()
