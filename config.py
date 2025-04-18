@@ -22,11 +22,19 @@ os.makedirs(DEFAULT_EXPORT_DIR, exist_ok=True)
 
 # Couleurs disponibles
 COLORS = [
-    "Rouge", "Bleu", "Vert", "Jaune", "Orange", "Violet", 
-    "Noir", "Blanc", "Gris", "Rose", "Marron", "Cyan", 
-    "Sky Blue", "Sakura Pink", "Lavande",
-    "Satin couleur Or", "Satin couleur Or/Noir", "Satin couleurs Noir/Violet",
-    "Aléatoire"
+    "Aléatoire",
+    "Bleu",
+    "Sky Blue", 
+    "Sakura Pink", 
+    "Vert", 
+    "Blanc", 
+    "Noir", 
+    "Orange", 
+    "Gris", 
+    "Lavande", 
+    "Satin couleur Or/Noir", 
+    "Satin couleur Or", 
+    "Satin couleur Noir/Violet"
 ]
 
 # Produits disponibles
@@ -56,25 +64,18 @@ UI_SETTINGS = {
 
 # Correspondance entre les noms de couleurs et les codes HEX pour l'interface
 COLOR_HEX_MAP = {
-    "Rouge": "#FF0000",
-    "Bleu": "#0000FF",
-    "Vert": "#00FF00",
-    "Jaune": "#FFFF00",
-    "Orange": "#FFA500",
-    "Violet": "#800080",
+    "Aléatoire": "#d9f1fa",
+    "Bleu": "#00448f",
+    "Sky Blue": "#00eaf7",
+    "Sakura Pink": "#ff86dc",
+    "Blanc": "#ffffff",
     "Noir": "#000000",
-    "Blanc": "#FFFFFF",
+    "Orange": "#ff7f00",
     "Gris": "#808080",
-    "Rose": "#FFC0CB",
-    "Marron": "#A52A2A",
-    "Cyan": "#00FFFF",
-    "Sky Blue": "#87CEEB",
-    "Sakura Pink": "#FFB7C5",
-    "Lavande": "#E6E6FA",
-    "Satin couleur Or": "#D4AF37",
-    "Satin couleur Or/Noir": "#8B7D37",
-    "Satin couleurs Noir/Violet": "#4B0082",
-    "Aléatoire": "#CCCCCC"
+    "Lavande": "#ba6eff",
+    "Satin couleur Or": "#d49a06",
+    "Satin couleur Or/Noir": "#d3b300",
+    "Satin couleur Noir/Violet": "#6b5087",
 }
 
 # Couleurs de l'interface utilisateur

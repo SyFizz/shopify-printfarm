@@ -504,16 +504,11 @@ class MainWindow(QMainWindow):
                 return
         
         # Créer un nouvel onglet d'inventaire
-        inventory_tab = QWidget()
-        
-        # Placeholder pour le contenu
-        layout = QVBoxLayout(inventory_tab)
-        label = QLabel("Inventaire (à implémenter)")
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+        from views.inventory_view import InventoryWidget
+        inventory_widget = InventoryWidget(self)
         
         # Ajouter l'onglet
-        self.tabs.addTab(inventory_tab, "Inventaire")
+        self.tabs.addTab(inventory_widget, "Inventaire")
         self.tabs.setCurrentIndex(self.tabs.count() - 1)
     
     def open_statistics(self):

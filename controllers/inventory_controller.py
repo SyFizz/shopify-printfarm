@@ -29,23 +29,7 @@ class InventoryController:
                         self.db.cursor.execute("""
                             INSERT INTO inventory (product, color, component, stock, alert_threshold)
                             VALUES (?, ?, NULL, 0, 3)
-                        """, (product, color))
-            
-            # Ajouter les composants pour SpinRing
-            components = ["Corps", "Rotor", "Disque"]
-            for component in components:
-                for color in COLORS:
-                    if color != "Aléatoire":
-                        self.db.cursor.execute("""
-                            INSERT INTO inventory (product, color, component, stock, alert_threshold)
-                            VALUES (?, ?, ?, 0, 5)
-                        """, ('SpinRing', color, component))
-                
-                # Enregistrer la relation produit-composant
-                self.db.cursor.execute("""
-                    INSERT OR IGNORE INTO product_components (product_name, component_name, quantity)
-                    VALUES (?, ?, 1)
-                """, ('SpinRing', component))
+                        """, (product, color))        
             
             self.db.conn.commit()
             
@@ -496,26 +480,57 @@ class InventoryController:
     # Nouvelles méthodes pour la gestion des composants
     #
     
-    def add_product_component(self, product_name, component_name, quantity=1):
+    def add_product_component(self, product_name, component_name, quantity=1, color_constraint=None):
         """
-        Ajoute un composant à un produit
+        Ajoute un composant à un produit avec une contrainte de couleur optionnelle
+        
+        Args:
+            product_name (str): Nom du produit
+            component_name (str): Nom du composant
+            quantity (int): Nombre d'unités de ce composant nécessaires
+            color_constraint (str, optional): Couleur spécifique pour ce composant, ou None pour utiliser la couleur du produit
         """
+        # Vérifier si la table des composants a une colonne pour les contraintes de couleur
+        # Si non, l'ajouter à la structure de la table
+        self.db.cursor.execute("PRAGMA table_info(product_components)")
+        columns = self.db.cursor.fetchall()
+        column_names = [column[1] for column in columns]
+        
+        # Ajouter la colonne si elle n'existe pas
+        if 'color_constraint' not in column_names:
+            self.db.cursor.execute("""
+                ALTER TABLE product_components
+                ADD COLUMN color_constraint TEXT
+            """)
+        
+        # Insérer ou remplacer le composant avec sa contrainte de couleur
         self.db.cursor.execute("""
-            INSERT OR REPLACE INTO product_components (product_name, component_name, quantity)
-            VALUES (?, ?, ?)
-        """, (product_name, component_name, quantity))
+            INSERT OR REPLACE INTO product_components 
+            (product_name, component_name, quantity, color_constraint)
+            VALUES (?, ?, ?, ?)
+        """, (product_name, component_name, quantity, color_constraint))
         
         # S'assurer que l'inventaire existe pour ce composant dans toutes les couleurs
-        for color in COLORS:
-            if color != "Aléatoire":
-                self.db.cursor.execute("""
-                    INSERT OR IGNORE INTO inventory (product, color, component, stock, alert_threshold)
-                    VALUES (?, ?, ?, 0, 3)
-                """, (product_name, color, component_name))
+        # Si une contrainte de couleur est spécifiée, créer uniquement pour cette couleur
+        if color_constraint:
+            # Créer l'inventaire seulement pour la couleur spécifique
+            self.db.cursor.execute("""
+                INSERT OR IGNORE INTO inventory 
+                (product, color, component, stock, alert_threshold)
+                VALUES (?, ?, ?, 0, 3)
+            """, (product_name, color_constraint, component_name))
+        else:
+            # Créer l'inventaire pour toutes les couleurs disponibles
+            for color in COLORS:
+                if color != "Aléatoire":
+                    self.db.cursor.execute("""
+                        INSERT OR IGNORE INTO inventory 
+                        (product, color, component, stock, alert_threshold)
+                        VALUES (?, ?, ?, 0, 3)
+                    """, (product_name, color, component_name))
         
         self.db.conn.commit()
         return True
-    
     def remove_product_component(self, product_name, component_name):
         """
         Supprime un composant d'un produit
@@ -807,3 +822,22 @@ class InventoryController:
             })
         
         return inventory
+    
+    def delete_inventory_item(self, product, color, component=None):
+        """Supprime complètement un item d'inventaire"""
+        query = """
+            DELETE FROM inventory
+            WHERE product = ? AND color = ?
+        """
+        
+        params = [product, color]
+        
+        if component is not None:
+            query += " AND component = ?"
+            params.append(component)
+        else:
+            query += " AND component IS NULL"
+        
+        self.db.cursor.execute(query, params)
+        self.db.conn.commit()
+        return True
