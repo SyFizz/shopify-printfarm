@@ -247,13 +247,21 @@ class InventoryManager:
         
         return self.components[name][color]
     
-    def add_product(self, name, description=""):
-        """Ajoute un produit au catalogue"""
-        if name in self.products:
-            return self.products[name]
+    ddef add_component(self, name, color, stock=0, alert_threshold=3, description=""):
+        """Ajoute un composant à l'inventaire"""
+        if name not in self.components:
+            self.components[name] = {}
         
-        self.products[name] = Product(name, description)
-        return self.products[name]
+        if color not in self.components[name]:
+            self.components[name][color] = Component(name, color, stock, alert_threshold)
+            # Pour le moment, nous n'utilisons pas la description pour les composants
+            # Vous pourriez étendre la classe Component pour inclure cette propriété
+        else:
+            # Mettre à jour le stock si le composant existe déjà
+            self.components[name][color].stock += stock
+            self.components[name][color].alert_threshold = alert_threshold
+        
+        return self.components[name][color]
     
     def update_component_stock(self, component_name, color, quantity):
         """Met à jour le stock d'un composant (ajout ou retrait)"""

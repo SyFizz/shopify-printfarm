@@ -34,15 +34,16 @@ class ColorIndicator(QFrame):
 class AssembleDialog(QDialog):
     """Dialogue pour assembler un produit"""
     
-    def __init__(self, product_name, product_details, available_colors, parent=None):
+     def __init__(self, product_name, product_details, available_colors, parent=None):
         super().__init__(parent)
         self.product_name = product_name
         self.product_details = product_details
         self.available_colors = available_colors
         self.component_colors = {}
+        self.order_controller = OrderController()
         
         self.setWindowTitle(f"Assembler {product_name}")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(550)
         self.setup_ui()
     
     def setup_ui(self):
@@ -143,6 +144,53 @@ class AssembleDialog(QDialog):
         components_layout.addWidget(self.components_table)
         layout.addWidget(components_group)
         
+        # Commandes en attente de ce produit
+        orders_group = QGroupBox("Commandes en attente de ce produit")
+        orders_layout = QVBoxLayout(orders_group)
+        
+        # Récupérer les commandes qui attendent ce produit
+        waiting_orders = self.order_controller.get_orders_waiting_for_product(self.product_name, self.color_combo.currentText())
+        
+        if waiting_orders:
+            orders_table = QTableWidget()
+            orders_table.setColumnCount(4)
+            orders_table.setHorizontalHeaderLabels(["ID Commande", "Date", "Client", "Quantité"])
+            orders_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            orders_table.setEditTriggers(QTableWidget.NoEditTriggers)
+            
+            # Remplir le tableau des commandes
+            orders_table.setRowCount(len(waiting_orders))
+            for row, order in enumerate(waiting_orders):
+                orders_table.setItem(row, 0, QTableWidgetItem(order['id']))
+                orders_table.setItem(row, 1, QTableWidgetItem(order['date']))
+                orders_table.setItem(row, 2, QTableWidgetItem(order['client']))
+                orders_table.setItem(row, 3, QTableWidgetItem(str(order['quantity'])))
+                
+                # Mettre en surbrillance la première ligne (commande la plus ancienne)
+                if row == 0:
+                    for col in range(4):
+                        orders_table.item(row, col).setBackground(QBrush(QColor("#e0f7fa")))
+            
+            orders_layout.addWidget(orders_table)
+            
+            # Recommandation
+            recommendation = QLabel("<b>Recommandation:</b> Attribuez ces produits à la commande la plus ancienne.")
+            recommendation.setStyleSheet("color: #4472C4; margin-top: 5px;")
+            orders_layout.addWidget(recommendation)
+            
+            # Option pour attribuer automatiquement
+            self.auto_assign_check = QCheckBox("Attribuer automatiquement à la commande la plus ancienne")
+            self.auto_assign_check.setChecked(True)
+            orders_layout.addWidget(self.auto_assign_check)
+            
+            # Stocker les commandes en attente
+            self.waiting_orders = waiting_orders
+        else:
+            orders_layout.addWidget(QLabel("Aucune commande n'est en attente de ce produit."))
+            self.waiting_orders = []
+        
+        layout.addWidget(orders_group)
+        
         # Boutons d'action
         buttons_layout = QHBoxLayout()
         
@@ -169,7 +217,7 @@ class AssembleDialog(QDialog):
         
         # Mettre à jour l'affichage des composants requis
         self.update_component_colors(self.color_combo.currentText())
-    
+        
     def get_constraint_description(self, constraint):
         """Retourne une description lisible d'une contrainte de couleur"""
         if constraint == "same_as_main":
@@ -274,15 +322,24 @@ class AssembleDialog(QDialog):
         
         # Redimensionner les lignes pour un meilleur affichage
         self.components_table.resizeRowsToContents()
-    
+        
     def get_assembly_data(self):
         """Retourne les données pour l'assemblage"""
-        return {
+        data = {
             "product": self.product_name,
             "color": self.color_combo.currentText(),
             "quantity": self.quantity_spin.value(),
             "component_colors": self.component_colors.copy()
         }
+        
+        # Ajouter l'information sur l'attribution automatique
+        if hasattr(self, 'auto_assign_check') and self.auto_assign_check.isChecked() and self.waiting_orders:
+            data["auto_assign"] = True
+            data["order_id"] = self.waiting_orders[0]['id']  # Première commande (la plus ancienne)
+        else:
+            data["auto_assign"] = False
+        
+        return data
 
 class InventoryView(QWidget):
     """Widget principal pour la gestion de l'inventaire"""
@@ -970,12 +1027,14 @@ class InventoryView(QWidget):
             # Récupérer les données d'assemblage
             assembly_data = dialog.get_assembly_data()
             
-            # Effectuer l'assemblage
+            # Effectuer l'assemblage avec les paramètres d'attribution automatique
             success, message = self.inventory_controller.assemble_product(
                 assembly_data["product"],
                 assembly_data["color"],
                 assembly_data["quantity"],
-                assembly_data["component_colors"]
+                assembly_data["component_colors"],
+                assembly_data.get("auto_assign", False),
+                assembly_data.get("order_id", None)
             )
             
             # Afficher le résultat
@@ -986,7 +1045,6 @@ class InventoryView(QWidget):
             
             # Mettre à jour les données
             self.load_data()
-    
     def adjust_component_stock(self, component_name, color, change):
         """Ajuste le stock d'un composant"""
         # Pour les ajustements importants, demander la quantité

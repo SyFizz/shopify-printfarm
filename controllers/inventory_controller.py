@@ -432,7 +432,7 @@ class InventoryController:
             for color in [c for c in COLORS if c != "Aléatoire"]:
                 stock = initial_stock.get(color, 0)
                 
-                # Ajouter en mémoire
+                # Ajouter en mémoire - passer la description comme argument
                 self.inventory.add_component(component_name, color, stock, 3, description)
                 
                 # Ajouter dans la base de données - Modifier pour inclure la description
@@ -839,7 +839,7 @@ class InventoryController:
         """
         return self.inventory.get_assemblable_products()
     
-    def assemble_product(self, product_name, color, quantity=1, component_colors=None):
+    def assemble_product(self, product_name, color, quantity=1, component_colors=None, auto_assign=False, order_id=None):
         """
         Assemble un produit à partir de ses composants
         
@@ -848,10 +848,12 @@ class InventoryController:
             color (str): Couleur principale du produit
             quantity (int): Nombre de produits à assembler
             component_colors (dict, optional): Couleurs spécifiques pour certains composants
-                                             {nom_composant: couleur}
+                                            {nom_composant: couleur}
+            auto_assign (bool): Si True, attribue automatiquement à une commande
+            order_id (str): ID de la commande pour attribution automatique
             
         Returns:
-            bool: True si l'assemblage a réussi, False sinon
+            tuple: (bool, str) - (succès, message)
         """
         try:
             # Vérifier si le produit peut être assemblé
@@ -877,12 +879,24 @@ class InventoryController:
             # Effectuer l'assemblage
             self.inventory.assemble_product(product_name, actual_color, quantity, component_colors)
             
-            # Mettre à jour la base de données (déjà fait dans les méthodes appelées)
+            # Attribution automatique à une commande si demandé
+            if auto_assign and order_id:
+                from controllers.order_controller import OrderController
+                order_controller = OrderController()
+                
+                # Mettre à jour le statut du produit dans la commande
+                order_controller.update_item_status(order_id, product_name, actual_color, "Imprimé")
+                
+                # Si l'attribution automatique est réussie, ne pas ajouter au stock de produits assemblés
+                return True, f"{quantity} {product_name} de couleur {actual_color} assemblé(s) et attribué(s) à la commande {order_id}"
+            
+            # Sinon, mettre à jour le stock de produits assemblés
+            self.update_assembled_product_stock(product_name, actual_color, quantity)
+            
             return True, f"{quantity} {product_name} de couleur {actual_color} assemblé(s) avec succès"
             
         except Exception as e:
             return False, f"Erreur lors de l'assemblage: {str(e)}"
-    
     #
     # Méthodes pour les variantes de couleurs
     #

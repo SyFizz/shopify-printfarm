@@ -6,11 +6,12 @@ class PrintController:
     
     def __init__(self):
         self.db = Database(DATABASE_PATH)
+        self.inventory_controller = InventoryController()
     
     def get_print_plan(self, include_printing=True):
         """
         Récupère le plan d'impression organisé par couleur
-        et regroupé par produit
+        et regroupé par produit/composant
         
         Args:
             include_printing (bool): Si True, inclut aussi les produits en cours d'impression
@@ -92,7 +93,34 @@ class PrintController:
         ou pour les commandes spécifiées.
         Ne marque QUE les produits qui sont actuellement en cours d'impression,
         pas ceux qui sont encore à imprimer.
+        
+        De plus, ajoute le composant imprimé à l'inventaire.
         """
+        # Compter le nombre de produits imprimés
+        if orders:
+            # Calculer pour les commandes spécifiées
+            placeholders = ', '.join(['?'] * len(orders))
+            query = f"""
+                SELECT SUM(quantity) as total_quantity
+                FROM order_items
+                WHERE product = ? AND color = ? AND status = 'En impression'
+                AND order_id IN ({placeholders})
+            """
+            params = [product, color] + orders
+        else:
+            # Calculer pour toutes les commandes
+            query = """
+                SELECT SUM(quantity) as total_quantity
+                FROM order_items
+                WHERE product = ? AND color = ? AND status = 'En impression'
+            """
+            params = [product, color]
+        
+        self.db.cursor.execute(query, params)
+        row = self.db.cursor.fetchone()
+        printed_quantity = row['total_quantity'] if row and row['total_quantity'] else 0
+        
+        # Mise à jour du statut dans la base de données
         if orders:
             # Mettre à jour uniquement les commandes spécifiées
             placeholders = ', '.join(['?'] * len(orders))
@@ -134,8 +162,12 @@ class PrintController:
                 order.update_status()
                 order_controller.update_order_status(order_id, order.status)
         
+        # Ajouter le composant imprimé à l'inventaire
+        if printed_quantity > 0:
+            self.inventory_controller.update_component_stock(product, color, printed_quantity)
+            print(f"Ajouté {printed_quantity} {product} de couleur {color} à l'inventaire.")
+        
         return len(updated_orders)
-    
     def get_print_stats(self):
         """
         Récupère des statistiques sur le plan d'impression
