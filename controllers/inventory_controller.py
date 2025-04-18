@@ -1,843 +1,983 @@
+"""
+Contrôleur pour la gestion de l'inventaire Plasmik3D.
+Implémente les fonctionnalités pour gérer les composants, produits et assemblages.
+"""
+
 from models.database import Database
-from models.inventory import InventoryItem, ColorVariant, ProductComponent, InventoryForecast
+from models.inventory import InventoryManager, Product, Component, ColorVariant
 from config import DATABASE_PATH, PRODUCTS, COLORS
-import datetime
 
 class InventoryController:
     """Contrôleur pour la gestion de l'inventaire"""
     
     def __init__(self):
         self.db = Database(DATABASE_PATH)
-        # Migrer les données si nécessaire
-        self.db.migrate_inventory_data()
+        self.inventory = InventoryManager()
+        
+        # Charger les données depuis la base de données
         self.initialize_inventory()
     
     def initialize_inventory(self):
-        """
-        Initialise l'inventaire avec tous les produits et couleurs disponibles
-        si ce n'est pas déjà fait
-        """
-        # Vérifier si l'inventaire est déjà initialisé
-        self.db.cursor.execute("SELECT COUNT(*) as count FROM inventory")
-        count = self.db.cursor.fetchone()['count']
+        """Initialise l'inventaire avec les données de la base de données"""
+        # Vérifier si les tables nécessaires existent
+        self._ensure_tables_exist()
         
-        if count == 0:
-            # Initialiser l'inventaire avec tous les produits et couleurs
-            for product in PRODUCTS:
-                for color in COLORS:
-                    if color != "Aléatoire":  # Ne pas inclure "Aléatoire" dans l'inventaire
-                        self.db.cursor.execute("""
-                            INSERT INTO inventory (product, color, component, stock, alert_threshold)
-                            VALUES (?, ?, NULL, 0, 3)
-                        """, (product, color))        
-            
-            self.db.conn.commit()
-            
-            # Initialiser quelques variantes de couleurs pour l'exemple
-            base_colors = {
-                "Rouge": ["Rouge Foncé", "Rouge Vif", "Rouge Bordeaux"],
-                "Bleu": ["Bleu Ciel", "Bleu Marine", "Bleu Turquoise"],
-                "Vert": ["Vert Forêt", "Vert Menthe", "Vert Olive"]
-            }
-            
-            hex_codes = {
-                "Rouge Foncé": "#8B0000",
-                "Rouge Vif": "#FF0000",
-                "Rouge Bordeaux": "#800020",
-                "Bleu Ciel": "#87CEEB",
-                "Bleu Marine": "#000080",
-                "Bleu Turquoise": "#40E0D0",
-                "Vert Forêt": "#228B22",
-                "Vert Menthe": "#98FB98",
-                "Vert Olive": "#808000"
-            }
-            
-            for base, variants in base_colors.items():
-                for variant in variants:
-                    self.db.cursor.execute("""
-                        INSERT OR IGNORE INTO color_variants (base_color, variant_name, hex_code)
-                        VALUES (?, ?, ?)
-                    """, (base, variant, hex_codes[variant]))
-            
-            self.db.conn.commit()
+        # Charger les composants
+        self._load_components()
+        
+        # Charger les produits et leurs définitions
+        self._load_products()
+        
+        # Charger les variantes de couleurs
+        self._load_color_variants()
     
-    def get_inventory(self, include_components=True):
-        """Récupère tout l'inventaire"""
-        inventory = []
+    def _ensure_tables_exist(self):
+        """S'assure que toutes les tables nécessaires existent dans la base de données"""
+        # Vérifier et créer la table des composants
+        self.db.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL,
+                stock INTEGER DEFAULT 0,
+                alert_threshold INTEGER DEFAULT 3,
+                UNIQUE(name, color)
+            )
+        """)
         
-        query = """
-            SELECT id, product, color, component, stock, alert_threshold
-            FROM inventory
-        """
+        # Vérifier et créer la table des produits
+        self.db.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT
+            )
+        """)
         
-        if not include_components:
-            query += " WHERE component IS NULL"
+        # Vérifier et créer la table des définitions de produits (composants requis)
+        self.db.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS product_components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_name TEXT NOT NULL,
+                component_name TEXT NOT NULL,
+                quantity INTEGER DEFAULT 1,
+                color_constraint TEXT,
+                UNIQUE(product_name, component_name)
+            )
+        """)
         
-        query += " ORDER BY product, component, color"
+        # Vérifier et créer la table des produits assemblés
+        self.db.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS assembled_products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_name TEXT NOT NULL,
+                color TEXT NOT NULL,
+                quantity INTEGER DEFAULT 0,
+                UNIQUE(product_name, color)
+            )
+        """)
         
-        self.db.cursor.execute(query)
+        # Vérifier et créer la table des variantes de couleurs
+        self.db.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS color_variants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_color TEXT NOT NULL,
+                variant_name TEXT NOT NULL,
+                hex_code TEXT NOT NULL,
+                UNIQUE(variant_name)
+            )
+        """)
+        
+        self.db.conn.commit()
+    
+    def _load_components(self):
+        """Charge les composants depuis la base de données"""
+        self.db.cursor.execute("""
+            SELECT name, color, stock, alert_threshold FROM components
+        """)
         
         for row in self.db.cursor.fetchall():
-            inventory.append({
-                'id': row['id'],
-                'product': row['product'],
-                'color': row['color'],
-                'component': row['component'],
-                'stock': row['stock'],
-                'alert_threshold': row['alert_threshold']
-            })
+            self.inventory.add_component(
+                row['name'],
+                row['color'],
+                row['stock'],
+                row['alert_threshold']
+            )
         
-        return inventory
+        # Si aucun composant n'existe, initialiser avec des composants par défaut
+        if not self.inventory.components:
+            self._initialize_default_components()
     
-    def get_product_stock(self, product, color, component=None):
-        """Récupère le stock d'un produit ou composant spécifique"""
-        query = """
-            SELECT stock
-            FROM inventory
-            WHERE product = ? AND color = ?
-        """
+    def _initialize_default_components(self):
+        """Initialise des composants par défaut pour les produits courants"""
+        # Liste des composants communs pour les fidget toys
+        default_components = [
+            "Corps", "Montant", "Roue", "Roue gauche", "Roue droite",
+            "Pièce centrale", "Pièce externe", "Bouton"
+        ]
         
-        params = [product, color]
+        # Créer chaque composant dans chaque couleur disponible
+        for component in default_components:
+            for color in [c for c in COLORS if c != "Aléatoire"]:
+                self.db.cursor.execute("""
+                    INSERT OR IGNORE INTO components (name, color, stock, alert_threshold)
+                    VALUES (?, ?, 0, 3)
+                """, (component, color))
+                
+                # Ajouter au gestionnaire d'inventaire
+                self.inventory.add_component(component, color, 0, 3)
         
-        if component is not None:
-            query += " AND component = ?"
-            params.append(component)
-        else:
-            query += " AND component IS NULL"
-        
-        self.db.cursor.execute(query, params)
-        
-        row = self.db.cursor.fetchone()
-        return row['stock'] if row else 0
+        self.db.conn.commit()
     
-    def update_stock(self, product, color, new_stock, component=None):
-        """Met à jour le stock d'un produit ou composant"""
-        query = """
-            UPDATE inventory
-            SET stock = ?
-            WHERE product = ? AND color = ?
-        """
+    def _load_products(self):
+        """Charge les produits et leurs définitions depuis la base de données"""
+        # Charger les produits
+        self.db.cursor.execute("SELECT name, description FROM products")
+        products_data = self.db.cursor.fetchall()
         
-        params = [new_stock, product, color]
+        # Si aucun produit n'existe, initialiser avec les produits par défaut
+        if not products_data:
+            self._initialize_default_products()
+            # Recharger les produits après initialisation
+            self.db.cursor.execute("SELECT name, description FROM products")
+            products_data = self.db.cursor.fetchall()
         
-        if component is not None:
-            query += " AND component = ?"
-            params.append(component)
-        else:
-            query += " AND component IS NULL"
-        
-        self.db.cursor.execute(query, params)
-        
-        if self.db.cursor.rowcount == 0:
-            # L'item n'existe pas encore, le créer
+        # Créer les objets de produit
+        for row in products_data:
+            product = self.inventory.add_product(row['name'], row['description'])
+            
+            # Charger les composants du produit
             self.db.cursor.execute("""
-                INSERT INTO inventory (product, color, component, stock, alert_threshold)
-                VALUES (?, ?, ?, ?, 3)
-            """, (product, color, component, new_stock))
+                SELECT component_name, quantity, color_constraint
+                FROM product_components
+                WHERE product_name = ?
+            """, (row['name'],))
+            
+            for comp_row in self.db.cursor.fetchall():
+                product.add_component(
+                    comp_row['component_name'],
+                    comp_row['quantity'],
+                    comp_row['color_constraint']
+                )
+            
+            # Charger les produits assemblés
+            self.db.cursor.execute("""
+                SELECT color, quantity
+                FROM assembled_products
+                WHERE product_name = ?
+            """, (row['name'],))
+            
+            for assembled_row in self.db.cursor.fetchall():
+                product.add_assembled_product(
+                    assembled_row['color'],
+                    assembled_row['quantity']
+                )
+    
+    def _initialize_default_products(self):
+        """Initialise des produits par défaut avec leurs composants"""
+        # Définitions des produits de base
+        default_products = [
+            {
+                "name": "StarNest",
+                "description": "Fidget toy en forme d'étoile avec des pièces imbriquées",
+                "components": [
+                    {"name": "Corps", "quantity": 1, "color_constraint": "same_as_main"}
+                ]
+            },
+            {
+                "name": "SpinRing",
+                "description": "Anneau rotatif avec deux roues",
+                "components": [
+                    {"name": "Montant", "quantity": 2, "color_constraint": "same_as_main"},
+                    {"name": "Roue droite", "quantity": 1, "color_constraint": "same_as:Roue gauche"},
+                    {"name": "Roue gauche", "quantity": 1, "color_constraint": None}
+                ]
+            },
+            {
+                "name": "ClickyPaw",
+                "description": "Fidget toy en forme de patte avec boutons cliquables",
+                "components": [
+                    {"name": "Pièce externe", "quantity": 4, "color_constraint": "same_as_main"},
+                    {"name": "Pièce centrale", "quantity": 1, "color_constraint": "same_as_main"},
+                    {"name": "Montant", "quantity": 1, "color_constraint": None}
+                ]
+            }
+        ]
+        
+        # Créer chaque produit
+        for product_def in default_products:
+            # Insérer le produit
+            self.db.cursor.execute("""
+                INSERT OR IGNORE INTO products (name, description)
+                VALUES (?, ?)
+            """, (product_def["name"], product_def["description"]))
+            
+            # Créer l'objet produit
+            product = self.inventory.add_product(
+                product_def["name"],
+                product_def["description"]
+            )
+            
+            # Ajouter les composants
+            for comp in product_def["components"]:
+                self.db.cursor.execute("""
+                    INSERT OR IGNORE INTO product_components 
+                    (product_name, component_name, quantity, color_constraint)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    product_def["name"],
+                    comp["name"],
+                    comp["quantity"],
+                    comp["color_constraint"]
+                ))
+                
+                # Ajouter au produit en mémoire
+                product.add_component(
+                    comp["name"],
+                    comp["quantity"],
+                    comp["color_constraint"]
+                )
         
         self.db.conn.commit()
-        return True
     
-    def adjust_stock(self, product, color, adjustment, component=None):
-        """
-        Ajuste le stock d'un produit ou composant par une quantité donnée
-        (positive pour ajouter, négative pour retirer)
-        """
-        current_stock = self.get_product_stock(product, color, component)
-        new_stock = max(0, current_stock + adjustment)  # Éviter un stock négatif
+    def _load_color_variants(self):
+        """Charge les variantes de couleurs depuis la base de données"""
+        self.db.cursor.execute("""
+            SELECT base_color, variant_name, hex_code FROM color_variants
+        """)
         
-        return self.update_stock(product, color, new_stock, component)
+        for row in self.db.cursor.fetchall():
+            self.inventory.add_color_variant(
+                row['base_color'],
+                row['variant_name'],
+                row['hex_code']
+            )
+        
+        # Si aucune variante n'existe, initialiser avec des variantes par défaut
+        if not self.inventory.color_variants:
+            self._initialize_default_color_variants()
     
-    def update_alert_threshold(self, product, color, threshold, component=None):
-        """Met à jour le seuil d'alerte d'un produit ou composant"""
-        query = """
-            UPDATE inventory
-            SET alert_threshold = ?
-            WHERE product = ? AND color = ?
-        """
+    def _initialize_default_color_variants(self):
+        """Initialise des variantes de couleurs par défaut"""
+        default_variants = {
+            "Rouge": [
+                {"name": "Rouge Foncé", "hex_code": "#8B0000"},
+                {"name": "Rouge Vif", "hex_code": "#FF0000"},
+                {"name": "Rouge Bordeaux", "hex_code": "#800020"}
+            ],
+            "Bleu": [
+                {"name": "Bleu Ciel", "hex_code": "#87CEEB"},
+                {"name": "Bleu Marine", "hex_code": "#000080"},
+                {"name": "Bleu Turquoise", "hex_code": "#40E0D0"}
+            ],
+            "Vert": [
+                {"name": "Vert Forêt", "hex_code": "#228B22"},
+                {"name": "Vert Menthe", "hex_code": "#98FB98"},
+                {"name": "Vert Olive", "hex_code": "#808000"}
+            ]
+        }
         
-        params = [threshold, product, color]
-        
-        if component is not None:
-            query += " AND component = ?"
-            params.append(component)
-        else:
-            query += " AND component IS NULL"
-        
-        self.db.cursor.execute(query, params)
+        for base_color, variants in default_variants.items():
+            for variant in variants:
+                self.db.cursor.execute("""
+                    INSERT OR IGNORE INTO color_variants 
+                    (base_color, variant_name, hex_code)
+                    VALUES (?, ?, ?)
+                """, (base_color, variant["name"], variant["hex_code"]))
+                
+                # Ajouter à l'inventaire en mémoire
+                self.inventory.add_color_variant(
+                    base_color,
+                    variant["name"],
+                    variant["hex_code"]
+                )
         
         self.db.conn.commit()
-        return True
     
-    def get_low_stock_products(self, include_components=True):
-        """Récupère les produits dont le stock est inférieur au seuil d'alerte"""
+    #
+    # Méthodes publiques pour la gestion des composants
+    #
+    
+    def get_all_components(self):
+        """
+        Récupère tous les composants disponibles
+        
+        Returns:
+            list: Liste des composants avec leur stock
+        """
+        components_list = []
+        
+        for comp_name, colors in self.inventory.components.items():
+            for color, component in colors.items():
+                components_list.append({
+                    'name': comp_name,
+                    'color': color,
+                    'stock': component.stock,
+                    'alert_threshold': component.alert_threshold
+                })
+        
+        return components_list
+    
+    def get_component_stock(self, component_name, color):
+        """
+        Récupère le stock d'un composant spécifique
+        
+        Args:
+            component_name (str): Nom du composant
+            color (str): Couleur du composant
+            
+        Returns:
+            int: Quantité en stock (0 si le composant n'existe pas)
+        """
+        if (component_name in self.inventory.components and 
+            color in self.inventory.components[component_name]):
+            return self.inventory.components[component_name][color].stock
+        return 0
+    
+    def update_component_stock(self, component_name, color, quantity_change):
+        """
+        Met à jour le stock d'un composant (ajoute ou retire)
+        
+        Args:
+            component_name (str): Nom du composant
+            color (str): Couleur du composant
+            quantity_change (int): Quantité à ajouter (positif) ou retirer (négatif)
+            
+        Returns:
+            bool: True si la mise à jour a réussi, False sinon
+        """
+        try:
+            # Mettre à jour en mémoire
+            component = self.inventory.update_component_stock(
+                component_name, color, quantity_change
+            )
+            
+            # Mettre à jour dans la base de données
+            if quantity_change > 0:
+                # Si quantité positive, créer ou mettre à jour
+                self.db.cursor.execute("""
+                    INSERT INTO components (name, color, stock, alert_threshold)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(name, color) DO UPDATE SET
+                    stock = stock + ?
+                """, (component_name, color, quantity_change, component.alert_threshold, quantity_change))
+            else:
+                # Si quantité négative, s'assurer que le composant existe
+                self.db.cursor.execute("""
+                    UPDATE components
+                    SET stock = MAX(0, stock + ?)
+                    WHERE name = ? AND color = ?
+                """, (quantity_change, component_name, color))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de la mise à jour du stock du composant: {e}")
+            return False
+    
+    def set_component_alert_threshold(self, component_name, color, threshold):
+        """
+        Définit le seuil d'alerte pour un composant
+        
+        Args:
+            component_name (str): Nom du composant
+            color (str): Couleur du composant
+            threshold (int): Nouveau seuil d'alerte
+            
+        Returns:
+            bool: True si la mise à jour a réussi, False sinon
+        """
+        try:
+            # Vérifier si le composant existe
+            if (component_name not in self.inventory.components or 
+                color not in self.inventory.components[component_name]):
+                # Créer le composant s'il n'existe pas
+                self.inventory.add_component(component_name, color, 0, threshold)
+                
+                self.db.cursor.execute("""
+                    INSERT OR IGNORE INTO components (name, color, stock, alert_threshold)
+                    VALUES (?, ?, 0, ?)
+                """, (component_name, color, threshold))
+            else:
+                # Mettre à jour en mémoire
+                self.inventory.components[component_name][color].alert_threshold = threshold
+                
+                # Mettre à jour dans la base de données
+                self.db.cursor.execute("""
+                    UPDATE components
+                    SET alert_threshold = ?
+                    WHERE name = ? AND color = ?
+                """, (threshold, component_name, color))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de la mise à jour du seuil d'alerte: {e}")
+            return False
+    
+    def add_new_component(self, component_name, initial_stock=None):
+        """
+        Ajoute un nouveau type de composant (dans toutes les couleurs)
+        
+        Args:
+            component_name (str): Nom du nouveau composant
+            initial_stock (dict, optional): Stock initial par couleur {couleur: quantité}
+            
+        Returns:
+            bool: True si l'ajout a réussi, False sinon
+        """
+        try:
+            if initial_stock is None:
+                initial_stock = {}
+            
+            # Ajouter le composant dans chaque couleur disponible
+            for color in [c for c in COLORS if c != "Aléatoire"]:
+                stock = initial_stock.get(color, 0)
+                
+                # Ajouter en mémoire
+                self.inventory.add_component(component_name, color, stock)
+                
+                # Ajouter dans la base de données
+                self.db.cursor.execute("""
+                    INSERT OR IGNORE INTO components (name, color, stock, alert_threshold)
+                    VALUES (?, ?, ?, 3)
+                """, (component_name, color, stock))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de l'ajout du nouveau composant: {e}")
+            return False
+    
+    def delete_component(self, component_name, color=None):
+        """
+        Supprime un composant de l'inventaire
+        
+        Args:
+            component_name (str): Nom du composant à supprimer
+            color (str, optional): Couleur spécifique à supprimer, ou None pour supprimer toutes les couleurs
+            
+        Returns:
+            bool: True si la suppression a réussi, False sinon
+        """
+        try:
+            if color:
+                # Supprimer une couleur spécifique
+                if (component_name in self.inventory.components and 
+                    color in self.inventory.components[component_name]):
+                    del self.inventory.components[component_name][color]
+                    
+                    # Si c'était la dernière couleur, supprimer le composant entier
+                    if not self.inventory.components[component_name]:
+                        del self.inventory.components[component_name]
+                
+                # Supprimer de la base de données
+                self.db.cursor.execute("""
+                    DELETE FROM components
+                    WHERE name = ? AND color = ?
+                """, (component_name, color))
+            else:
+                # Supprimer toutes les couleurs du composant
+                if component_name in self.inventory.components:
+                    del self.inventory.components[component_name]
+                
+                # Supprimer de la base de données
+                self.db.cursor.execute("""
+                    DELETE FROM components
+                    WHERE name = ?
+                """, (component_name,))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de la suppression du composant: {e}")
+            return False
+    
+    def get_low_stock_components(self, threshold_override=None):
+        """
+        Récupère les composants dont le stock est inférieur au seuil d'alerte
+        
+        Args:
+            threshold_override (int, optional): Seuil personnalisé à utiliser à la place du seuil stocké
+            
+        Returns:
+            list: Liste des composants en stock bas
+        """
         low_stock = []
         
-        query = """
-            SELECT product, color, component, stock, alert_threshold
-            FROM inventory
-            WHERE stock < alert_threshold
-        """
-        
-        if not include_components:
-            query += " AND component IS NULL"
-        
-        query += " ORDER BY product, component, color"
-        
-        self.db.cursor.execute(query)
-        
-        for row in self.db.cursor.fetchall():
-            low_stock.append({
-                'product': row['product'],
-                'color': row['color'],
-                'component': row['component'],
-                'stock': row['stock'],
-                'alert_threshold': row['alert_threshold']
-            })
+        for comp_name, colors in self.inventory.components.items():
+            for color, component in colors.items():
+                threshold = threshold_override if threshold_override is not None else component.alert_threshold
+                
+                if component.stock < threshold:
+                    low_stock.append({
+                        'name': comp_name,
+                        'color': color,
+                        'stock': component.stock,
+                        'alert_threshold': component.alert_threshold
+                    })
         
         return low_stock
     
-    def calculate_needed_prints(self, include_components=True):
-        """
-        Calcule le nombre de pièces à imprimer pour chaque produit
-        en fonction des commandes en attente et du stock
-        """
-        needed_prints = []
-        
-        # Récupérer tous les produits à imprimer (non décomposés en composants)
-        self.db.cursor.execute("""
-            SELECT oi.product, oi.color, SUM(oi.quantity) as needed
-            FROM order_items oi
-            WHERE oi.status = 'À imprimer'
-            GROUP BY oi.product, oi.color
-        """)
-        
-        products_to_print = []
-        for row in self.db.cursor.fetchall():
-            products_to_print.append({
-                'product': row['product'],
-                'color': row['color'],
-                'quantity': row['needed']
-            })
-        
-        # Pour chaque produit, vérifier s'il a des composants
-        for product_item in products_to_print:
-            product = product_item['product']
-            color = product_item['color']
-            quantity = product_item['quantity']
-            
-            # Vérifier si le produit a des composants
-            self.db.cursor.execute("""
-                SELECT COUNT(*) as count
-                FROM product_components
-                WHERE product_name = ?
-            """, (product,))
-            
-            has_components = self.db.cursor.fetchone()['count'] > 0
-            
-            if has_components and include_components:
-                # Récupérer les composants du produit
-                self.db.cursor.execute("""
-                    SELECT component_name, quantity
-                    FROM product_components
-                    WHERE product_name = ?
-                """, (product,))
-                
-                components = []
-                for comp_row in self.db.cursor.fetchall():
-                    components.append({
-                        'name': comp_row['component_name'],
-                        'quantity': comp_row['quantity']
-                    })
-                
-                # Pour chaque composant, vérifier le stock et ajouter à la liste si nécessaire
-                for component in components:
-                    component_name = component['name']
-                    component_quantity = component['quantity']
-                    
-                    # Stock actuel du composant
-                    stock = self.get_product_stock(product, color, component_name)
-                    
-                    # Nombre total de composants nécessaires
-                    total_needed = quantity * component_quantity
-                    
-                    # Nombre à imprimer
-                    to_print = max(0, total_needed - stock)
-                    
-                    if to_print > 0:
-                        needed_prints.append({
-                            'product': product,
-                            'color': color,
-                            'component': component_name,
-                            'stock': stock,
-                            'needed': total_needed,
-                            'to_print': to_print
-                        })
-            else:
-                # Pour les produits sans composants ou si on ne prend pas en compte les composants
-                stock = self.get_product_stock(product, color)
-                to_print = max(0, quantity - stock)
-                
-                if to_print > 0:
-                    needed_prints.append({
-                        'product': product,
-                        'color': color,
-                        'component': None,
-                        'stock': stock,
-                        'needed': quantity,
-                        'to_print': to_print
-                    })
-        
-        return needed_prints
+    #
+    # Méthodes publiques pour la gestion des produits
+    #
     
-    def get_product_to_print_count(self, product, color, component=None):
+    def get_all_products(self):
         """
-        Récupère le nombre de produits à imprimer pour un produit et une couleur
+        Récupère tous les produits avec leurs définitions et stocks assemblés
+        
+        Returns:
+            list: Liste des produits avec leurs détails
         """
-        self.db.cursor.execute("""
-            SELECT SUM(quantity) as count
-            FROM order_items
-            WHERE product = ? AND color = ? AND status = 'À imprimer'
-        """, (product, color))
+        products_list = []
         
-        row = self.db.cursor.fetchone()
-        total_needed = row["count"] if row and row["count"] else 0
-        
-        # Si c'est un composant, multiplier par la quantité nécessaire pour chaque produit
-        if component:
-            self.db.cursor.execute("""
-                SELECT quantity
-                FROM product_components
-                WHERE product_name = ? AND component_name = ?
-            """, (product, component))
-            
-            comp_row = self.db.cursor.fetchone()
-            if comp_row:
-                total_needed *= comp_row["quantity"]
-        
-        return total_needed
-
-    def get_inventory_with_print_needs(self, include_components=True):
-        """
-        Récupère l'inventaire avec le nombre de produits à imprimer pour chaque item
-        """
-        inventory = []
-        
-        query = """
-            SELECT id, product, color, component, stock, alert_threshold
-            FROM inventory
-        """
-        
-        if not include_components:
-            query += " WHERE component IS NULL"
-        
-        query += " ORDER BY product, component, color"
-        
-        self.db.cursor.execute(query)
-        
-        for row in self.db.cursor.fetchall():
-            product = row["product"]
-            color = row["color"]
-            component = row["component"]
-            
-            # Récupérer le nombre de produits à imprimer
-            to_print = self.get_product_to_print_count(product, color, component)
-            
-            inventory.append({
-                'id': row['id'],
-                'product': row['product'],
-                'color': row['color'],
-                'component': row['component'],
-                'stock': row['stock'],
-                'alert_threshold': row['alert_threshold'],
-                'to_print': to_print,
-                'status': 'OK' if row['stock'] >= row['alert_threshold'] else 'Low'
-            })
-        
-        return inventory
-
-    def adjust_inventory_after_printing(self, product, color, quantity, component=None):
-        """
-        Ajuste l'inventaire après une impression
-        """
-        return self.adjust_stock(product, color, quantity, component)
-
-    def adjust_inventory_after_order(self, order_id):
-        """
-        Ajuste l'inventaire après l'envoi d'une commande
-        """
-        # Récupérer les produits de la commande
-        self.db.cursor.execute("""
-            SELECT product, color, quantity
-            FROM order_items
-            WHERE order_id = ?
-        """, (order_id,))
-        
-        for row in self.db.cursor.fetchall():
-            product = row["product"]
-            color = row["color"]
-            quantity = row["quantity"]
-            
-            # Vérifier si le produit a des composants
-            self.db.cursor.execute("""
-                SELECT COUNT(*) as count
-                FROM product_components
-                WHERE product_name = ?
-            """, (product,))
-            
-            has_components = self.db.cursor.fetchone()['count'] > 0
-            
-            if has_components:
-                # Récupérer les composants du produit
-                self.db.cursor.execute("""
-                    SELECT component_name, quantity as comp_quantity
-                    FROM product_components
-                    WHERE product_name = ?
-                """, (product,))
+        for product_name, product in self.inventory.products.items():
+            # Préparation des données des composants
+            components = []
+            for comp in product.components:
+                component_data = {
+                    'name': comp['name'],
+                    'quantity': comp['quantity']
+                }
                 
-                for comp_row in self.db.cursor.fetchall():
-                    component = comp_row["component_name"]
-                    comp_quantity = comp_row["comp_quantity"]
-                    
-                    # Ajuster le stock du composant
-                    current_stock = self.get_product_stock(product, color, component)
-                    new_stock = max(0, current_stock - quantity * comp_quantity)
-                    self.update_stock(product, color, new_stock, component)
-            else:
-                # Pour les produits sans composants
-                current_stock = self.get_product_stock(product, color)
-                new_stock = max(0, current_stock - quantity)
-                self.update_stock(product, color, new_stock)
+                # Ajouter la contrainte de couleur si elle existe
+                if comp['name'] in product.color_constraints:
+                    component_data['color_constraint'] = product.color_constraints[comp['name']]
+                
+                components.append(component_data)
+            
+            # Création de l'objet produit à retourner
+            product_data = {
+                'name': product_name,
+                'description': product.description,
+                'components': components,
+                'assembled_stock': product.assembled_items.copy()
+            }
+            
+            products_list.append(product_data)
         
-        self.db.conn.commit()
-        return True
-
-    def get_inventory_summary(self, include_components=True):
+        return products_list
+    
+    def get_product_details(self, product_name):
         """
-        Récupère un résumé de l'inventaire
+        Récupère les détails d'un produit spécifique
+        
+        Args:
+            product_name (str): Nom du produit
+            
+        Returns:
+            dict: Détails du produit, ou None si le produit n'existe pas
         """
-        summary = {
-            "total_products": 0,
-            "total_stock": 0,
-            "low_stock_count": 0,
-            "avg_stock_per_product": 0,
-            "component_count": 0
+        if product_name not in self.inventory.products:
+            return None
+        
+        product = self.inventory.products[product_name]
+        
+        # Préparation des données des composants
+        components = []
+        for comp in product.components:
+            component_data = {
+                'name': comp['name'],
+                'quantity': comp['quantity']
+            }
+            
+            # Ajouter la contrainte de couleur si elle existe
+            if comp['name'] in product.color_constraints:
+                component_data['color_constraint'] = product.color_constraints[comp['name']]
+            
+            components.append(component_data)
+        
+        # Création de l'objet produit à retourner
+        product_data = {
+            'name': product_name,
+            'description': product.description,
+            'components': components,
+            'assembled_stock': product.assembled_items.copy(),
+            'total_assembled': product.get_total_assembled()
         }
         
-        # Nombre total de produits différents en stock
-        query = """
-            SELECT COUNT(*) as count
-            FROM inventory
-            WHERE stock > 0
-        """
-        
-        if not include_components:
-            query += " AND component IS NULL"
-            
-        self.db.cursor.execute(query)
-        summary["total_products"] = self.db.cursor.fetchone()["count"]
-        
-        # Stock total
-        query = """
-            SELECT SUM(stock) as total
-            FROM inventory
-        """
-        
-        if not include_components:
-            query += " WHERE component IS NULL"
-            
-        self.db.cursor.execute(query)
-        summary["total_stock"] = self.db.cursor.fetchone()["total"] or 0
-        
-        # Nombre de produits en stock bas
-        query = """
-            SELECT COUNT(*) as count
-            FROM inventory
-            WHERE stock < alert_threshold
-        """
-        
-        if not include_components:
-            query += " AND component IS NULL"
-            
-        self.db.cursor.execute(query)
-        summary["low_stock_count"] = self.db.cursor.fetchone()["count"]
-        
-        # Nombre de composants en stock
-        self.db.cursor.execute("""
-            SELECT COUNT(*) as count
-            FROM inventory
-            WHERE component IS NOT NULL AND stock > 0
-        """)
-        summary["component_count"] = self.db.cursor.fetchone()["count"]
-        
-        # Stock moyen par produit
-        if summary["total_products"] > 0:
-            summary["avg_stock_per_product"] = summary["total_stock"] / summary["total_products"]
-        
-        return summary
+        return product_data
     
-    #
-    # Nouvelles méthodes pour la gestion des composants
-    #
-    
-    def add_product_component(self, product_name, component_name, quantity=1, color_constraint=None):
+    def get_assembled_product_stock(self, product_name, color=None):
         """
-        Ajoute un composant à un produit avec une contrainte de couleur optionnelle
+        Récupère le stock d'un produit assemblé
+        
+        Args:
+            product_name (str): Nom du produit
+            color (str, optional): Couleur spécifique, ou None pour tous
+            
+        Returns:
+            int ou dict: Quantité en stock pour la couleur spécifiée, ou dictionnaire {couleur: quantité}
+        """
+        if product_name not in self.inventory.products:
+            return 0 if color else {}
+        
+        product = self.inventory.products[product_name]
+        
+        if color:
+            return product.assembled_items.get(color, 0)
+        else:
+            return product.assembled_items.copy()
+    
+    def update_assembled_product_stock(self, product_name, color, quantity_change):
+        """
+        Met à jour le stock d'un produit assemblé (ajoute ou retire)
+        
+        Args:
+            product_name (str): Nom du produit
+            color (str): Couleur du produit
+            quantity_change (int): Quantité à ajouter (positif) ou retirer (négatif)
+            
+        Returns:
+            bool: True si la mise à jour a réussi, False sinon
+        """
+        try:
+            if product_name not in self.inventory.products:
+                return False
+            
+            product = self.inventory.products[product_name]
+            
+            if quantity_change > 0:
+                # Ajouter au stock
+                product.add_assembled_product(color, quantity_change)
+                
+                # Mettre à jour la base de données
+                self.db.cursor.execute("""
+                    INSERT INTO assembled_products (product_name, color, quantity)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(product_name, color) DO UPDATE SET
+                    quantity = quantity + ?
+                """, (product_name, color, quantity_change, quantity_change))
+            else:
+                # Retirer du stock
+                try:
+                    product.remove_assembled_product(color, abs(quantity_change))
+                    
+                    # Mettre à jour la base de données
+                    self.db.cursor.execute("""
+                        UPDATE assembled_products
+                        SET quantity = MAX(0, quantity + ?)
+                        WHERE product_name = ? AND color = ?
+                    """, (quantity_change, product_name, color))
+                    
+                    # Si le stock atteint zéro, supprimer l'entrée
+                    self.db.cursor.execute("""
+                        DELETE FROM assembled_products
+                        WHERE product_name = ? AND color = ? AND quantity <= 0
+                    """, (product_name, color))
+                    
+                except ValueError as e:
+                    # Gérer le cas où le stock est insuffisant
+                    print(f"Erreur: {e}")
+                    return False
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de la mise à jour du stock du produit assemblé: {e}")
+            return False
+    
+    def add_product(self, product_name, description=""):
+        """
+        Ajoute un nouveau produit au catalogue
+        
+        Args:
+            product_name (str): Nom du produit
+            description (str, optional): Description du produit
+            
+        Returns:
+            bool: True si l'ajout a réussi, False sinon
+        """
+        try:
+            # Vérifier si le produit existe déjà
+            if product_name in self.inventory.products:
+                return False
+            
+            # Ajouter en mémoire
+            self.inventory.add_product(product_name, description)
+            
+            # Ajouter dans la base de données
+            self.db.cursor.execute("""
+                INSERT INTO products (name, description)
+                VALUES (?, ?)
+            """, (product_name, description))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de l'ajout du produit: {e}")
+            return False
+    
+    def add_component_to_product(self, product_name, component_name, quantity=1, color_constraint=None):
+        """
+        Ajoute un composant à un produit
         
         Args:
             product_name (str): Nom du produit
             component_name (str): Nom du composant
-            quantity (int): Nombre d'unités de ce composant nécessaires
-            color_constraint (str, optional): Couleur spécifique pour ce composant, ou None pour utiliser la couleur du produit
+            quantity (int): Nombre d'unités nécessaires
+            color_constraint (str, optional): Contrainte de couleur
+            
+        Returns:
+            bool: True si l'ajout a réussi, False sinon
         """
-        # Vérifier si la table des composants a une colonne pour les contraintes de couleur
-        # Si non, l'ajouter à la structure de la table
-        self.db.cursor.execute("PRAGMA table_info(product_components)")
-        columns = self.db.cursor.fetchall()
-        column_names = [column[1] for column in columns]
-        
-        # Ajouter la colonne si elle n'existe pas
-        if 'color_constraint' not in column_names:
+        try:
+            if product_name not in self.inventory.products:
+                return False
+            
+            product = self.inventory.products[product_name]
+            
+            # Ajouter en mémoire
+            product.add_component(component_name, quantity, color_constraint)
+            
+            # Ajouter dans la base de données
             self.db.cursor.execute("""
-                ALTER TABLE product_components
-                ADD COLUMN color_constraint TEXT
-            """)
+                INSERT INTO product_components 
+                (product_name, component_name, quantity, color_constraint)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(product_name, component_name) DO UPDATE SET
+                quantity = ?, color_constraint = ?
+            """, (
+                product_name, component_name, quantity, color_constraint,
+                quantity, color_constraint
+            ))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de l'ajout du composant au produit: {e}")
+            return False
+    
+    def remove_component_from_product(self, product_name, component_name):
+        """
+        Retire un composant d'un produit
         
-        # Insérer ou remplacer le composant avec sa contrainte de couleur
-        self.db.cursor.execute("""
-            INSERT OR REPLACE INTO product_components 
-            (product_name, component_name, quantity, color_constraint)
-            VALUES (?, ?, ?, ?)
-        """, (product_name, component_name, quantity, color_constraint))
-        
-        # S'assurer que l'inventaire existe pour ce composant dans toutes les couleurs
-        # Si une contrainte de couleur est spécifiée, créer uniquement pour cette couleur
-        if color_constraint:
-            # Créer l'inventaire seulement pour la couleur spécifique
+        Args:
+            product_name (str): Nom du produit
+            component_name (str): Nom du composant
+            
+        Returns:
+            bool: True si le retrait a réussi, False sinon
+        """
+        try:
+            if product_name not in self.inventory.products:
+                return False
+            
+            product = self.inventory.products[product_name]
+            
+            # Retirer en mémoire
+            product.components = [c for c in product.components if c["name"] != component_name]
+            
+            # Retirer toute contrainte de couleur associée
+            if component_name in product.color_constraints:
+                del product.color_constraints[component_name]
+            
+            # Retirer de la base de données
             self.db.cursor.execute("""
-                INSERT OR IGNORE INTO inventory 
-                (product, color, component, stock, alert_threshold)
-                VALUES (?, ?, ?, 0, 3)
-            """, (product_name, color_constraint, component_name))
-        else:
-            # Créer l'inventaire pour toutes les couleurs disponibles
-            for color in COLORS:
-                if color != "Aléatoire":
-                    self.db.cursor.execute("""
-                        INSERT OR IGNORE INTO inventory 
-                        (product, color, component, stock, alert_threshold)
-                        VALUES (?, ?, ?, 0, 3)
-                    """, (product_name, color, component_name))
-        
-        self.db.conn.commit()
-        return True
-    def remove_product_component(self, product_name, component_name):
-        """
-        Supprime un composant d'un produit
-        """
-        self.db.cursor.execute("""
-            DELETE FROM product_components
-            WHERE product_name = ? AND component_name = ?
-        """, (product_name, component_name))
-        
-        self.db.conn.commit()
-        return True
+                DELETE FROM product_components
+                WHERE product_name = ? AND component_name = ?
+            """, (product_name, component_name))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors du retrait du composant du produit: {e}")
+            return False
     
-    def get_product_components(self, product_name):
+    def delete_product(self, product_name):
         """
-        Récupère tous les composants d'un produit
+        Supprime un produit du catalogue
+        
+        Args:
+            product_name (str): Nom du produit
+            
+        Returns:
+            bool: True si la suppression a réussi, False sinon
         """
-        components = []
-        
-        self.db.cursor.execute("""
-            SELECT component_name, quantity
-            FROM product_components
-            WHERE product_name = ?
-        """, (product_name,))
-        
-        for row in self.db.cursor.fetchall():
-            components.append({
-                'name': row['component_name'],
-                'quantity': row['quantity']
-            })
-        
-        return components
-    
-    def is_product_with_components(self, product_name):
-        """
-        Vérifie si un produit a des composants
-        """
-        self.db.cursor.execute("""
-            SELECT COUNT(*) as count
-            FROM product_components
-            WHERE product_name = ?
-        """, (product_name,))
-        
-        return self.db.cursor.fetchone()['count'] > 0
+        try:
+            if product_name not in self.inventory.products:
+                return False
+            
+            # Supprimer en mémoire
+            del self.inventory.products[product_name]
+            
+            # Supprimer de la base de données
+            self.db.cursor.execute("""
+                DELETE FROM products WHERE name = ?
+            """, (product_name,))
+            
+            self.db.cursor.execute("""
+                DELETE FROM product_components WHERE product_name = ?
+            """, (product_name,))
+            
+            self.db.cursor.execute("""
+                DELETE FROM assembled_products WHERE product_name = ?
+            """, (product_name,))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de la suppression du produit: {e}")
+            return False
     
     #
-    # Nouvelles méthodes pour la gestion des variantes de couleurs
+    # Méthodes publiques pour l'assemblage
     #
+    
+    def get_assemblable_products(self):
+        """
+        Récupère la liste des produits assemblables avec les stocks actuels
+        
+        Returns:
+            dict: {nom_produit: {couleur: quantité_assemblable}}
+        """
+        return self.inventory.get_assemblable_products()
+    
+    def assemble_product(self, product_name, color, quantity=1, component_colors=None):
+        """
+        Assemble un produit à partir de ses composants
+        
+        Args:
+            product_name (str): Nom du produit à assembler
+            color (str): Couleur principale du produit
+            quantity (int): Nombre de produits à assembler
+            component_colors (dict, optional): Couleurs spécifiques pour certains composants
+                                             {nom_composant: couleur}
+            
+        Returns:
+            bool: True si l'assemblage a réussi, False sinon
+        """
+        try:
+            # Vérifier si le produit peut être assemblé
+            assemblable = self.get_assemblable_products()
+            if (product_name not in assemblable or 
+                (color != "Aléatoire" and color not in assemblable[product_name]) or
+                (color != "Aléatoire" and assemblable[product_name][color] < quantity) or
+                (color == "Aléatoire" and assemblable[product_name].get("Aléatoire", 0) < quantity)):
+                
+                return False, "Stock de composants insuffisant pour l'assemblage"
+            
+            # Si couleur aléatoire, choisir une couleur disponible
+            actual_color = color
+            if color == "Aléatoire":
+                # Trouver les couleurs disponibles (sauf "Aléatoire")
+                available_colors = [c for c in assemblable[product_name].keys() if c != "Aléatoire"]
+                if available_colors:
+                    # Choisir la première couleur disponible
+                    actual_color = available_colors[0]
+                else:
+                    return False, "Aucune couleur disponible pour l'assemblage aléatoire"
+            
+            # Effectuer l'assemblage
+            self.inventory.assemble_product(product_name, actual_color, quantity, component_colors)
+            
+            # Mettre à jour la base de données (déjà fait dans les méthodes appelées)
+            return True, f"{quantity} {product_name} de couleur {actual_color} assemblé(s) avec succès"
+            
+        except Exception as e:
+            return False, f"Erreur lors de l'assemblage: {str(e)}"
+    
+    #
+    # Méthodes pour les variantes de couleurs
+    #
+    
+    def get_color_variants(self, base_color=None):
+        """
+        Récupère les variantes de couleurs
+        
+        Args:
+            base_color (str, optional): Filtrer par couleur de base
+            
+        Returns:
+            list: Liste des variantes de couleurs
+        """
+        variants = []
+        
+        for variant_name, variant in self.inventory.color_variants.items():
+            if base_color is None or variant.base_color == base_color:
+                variants.append({
+                    'base_color': variant.base_color,
+                    'variant_name': variant.variant_name,
+                    'hex_code': variant.hex_code
+                })
+        
+        return variants
     
     def add_color_variant(self, base_color, variant_name, hex_code):
         """
         Ajoute une variante de couleur
-        """
-        self.db.cursor.execute("""
-            INSERT OR REPLACE INTO color_variants (base_color, variant_name, hex_code)
-            VALUES (?, ?, ?)
-        """, (base_color, variant_name, hex_code))
         
-        self.db.conn.commit()
-        return True
+        Args:
+            base_color (str): Couleur de base
+            variant_name (str): Nom de la variante
+            hex_code (str): Code hexadécimal
+            
+        Returns:
+            bool: True si l'ajout a réussi, False sinon
+        """
+        try:
+            # Ajouter en mémoire
+            self.inventory.add_color_variant(base_color, variant_name, hex_code)
+            
+            # Ajouter dans la base de données
+            self.db.cursor.execute("""
+                INSERT OR REPLACE INTO color_variants 
+                (base_color, variant_name, hex_code)
+                VALUES (?, ?, ?)
+            """, (base_color, variant_name, hex_code))
+            
+            self.db.conn.commit()
+            return True
+            
+        except Exception as e:
+            print(f"Erreur lors de l'ajout de la variante de couleur: {e}")
+            return False
     
-    def remove_color_variant(self, variant_name):
+    def delete_color_variant(self, variant_name):
         """
         Supprime une variante de couleur
+        
+        Args:
+            variant_name (str): Nom de la variante
+            
+        Returns:
+            bool: True si la suppression a réussi, False sinon
         """
-        self.db.cursor.execute("""
-            DELETE FROM color_variants
-            WHERE variant_name = ?
-        """, (variant_name,))
-        
-        self.db.conn.commit()
-        return True
-    
-    def get_color_variants(self, base_color=None):
-        """
-        Récupère toutes les variantes de couleurs ou seulement celles d'une couleur de base
-        """
-        variants = []
-        
-        query = "SELECT base_color, variant_name, hex_code FROM color_variants"
-        params = []
-        
-        if base_color:
-            query += " WHERE base_color = ?"
-            params.append(base_color)
-        
-        query += " ORDER BY base_color, variant_name"
-        
-        self.db.cursor.execute(query, params)
-        
-        for row in self.db.cursor.fetchall():
-            variants.append({
-                'base_color': row['base_color'],
-                'variant_name': row['variant_name'],
-                'hex_code': row['hex_code']
-            })
-        
-        return variants
-    
-    def color_variant_exists(self, variant_name):
-        """
-        Vérifie si une variante de couleur existe
-        """
-        self.db.cursor.execute("""
-            SELECT COUNT(*) as count
-            FROM color_variants
-            WHERE variant_name = ?
-        """, (variant_name,))
-        
-        return self.db.cursor.fetchone()['count'] > 0
-    
-    #
-    # Nouvelles méthodes pour les prévisions d'inventaire
-    #
-    
-    def update_inventory_forecast(self):
-        """
-        Met à jour les prévisions d'inventaire en fonction des ventes
-        """
-        # Récupérer les données des 3 derniers mois pour l'analyse
-        three_months_ago = datetime.datetime.now() - datetime.timedelta(days=90)
-        date_limit = three_months_ago.strftime("%Y-%m-%d")
-        
-        # Calculer les ventes moyennes mensuelles par produit et couleur
-        self.db.cursor.execute("""
-            SELECT oi.product, oi.color, SUM(oi.quantity) / 3.0 as monthly_avg
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.id
-            WHERE o.date >= ?
-            GROUP BY oi.product, oi.color
-        """, (date_limit,))
-        
-        # Stocker les résultats temporaires
-        monthly_sales = {}
-        for row in self.db.cursor.fetchall():
-            key = (row['product'], row['color'], None)  # Tuple (produit, couleur, composant)
-            monthly_sales[key] = row['monthly_avg']
-        
-        # Pour les produits avec composants, répartir les ventes sur les composants
-        for product, color, _ in list(monthly_sales.keys()):
-            # Vérifier si le produit a des composants
+        try:
+            if variant_name not in self.inventory.color_variants:
+                return False
+            
+            # Supprimer en mémoire
+            del self.inventory.color_variants[variant_name]
+            
+            # Supprimer de la base de données
             self.db.cursor.execute("""
-                SELECT component_name, quantity
-                FROM product_components
-                WHERE product_name = ?
-            """, (product,))
+                DELETE FROM color_variants
+                WHERE variant_name = ?
+            """, (variant_name,))
             
-            components = self.db.cursor.fetchall()
-            if components:
-                monthly_avg = monthly_sales.get((product, color, None), 0)
-                for comp in components:
-                    comp_name = comp['component_name']
-                    comp_quantity = comp['quantity']
-                    key = (product, color, comp_name)
-                    monthly_sales[key] = monthly_avg * comp_quantity
-        
-        # Calculer le stock recommandé et les facteurs de tendance
-        # Pour chaque produit ou composant, mettre à jour les prévisions
-        for (product, color, component), monthly_avg in monthly_sales.items():
-            # Stock recommandé = ventes mensuelles moyennes * 1.5
-            recommended_stock = int(monthly_avg * 1.5)
+            self.db.conn.commit()
+            return True
             
-            # Vérifier si une entrée de prévision existe déjà
-            self.db.cursor.execute("""
-                SELECT id, avg_monthly_sales, recommended_stock, trend_factor
-                FROM inventory_forecast
-                WHERE product = ? AND color = ? AND (component = ? OR (component IS NULL AND ? IS NULL))
-            """, (product, color, component, component))
-            
-            row = self.db.cursor.fetchone()
-            
-            if row:
-                # Calculer le facteur de tendance
-                old_avg = row['avg_monthly_sales']
-                trend_factor = 1.0
-                if old_avg > 0:
-                    trend_factor = monthly_avg / old_avg
-                    # Limiter les variations extrêmes
-                    trend_factor = max(0.5, min(trend_factor, 2.0))
-                
-                # Mettre à jour l'entrée existante
-                self.db.cursor.execute("""
-                    UPDATE inventory_forecast
-                    SET avg_monthly_sales = ?,
-                        recommended_stock = ?,
-                        trend_factor = ?
-                    WHERE id = ?
-                """, (monthly_avg, recommended_stock, trend_factor, row['id']))
-            else:
-                # Créer une nouvelle entrée
-                self.db.cursor.execute("""
-                    INSERT INTO inventory_forecast (
-                        product, color, component, 
-                        avg_monthly_sales, recommended_stock, trend_factor
-                    ) VALUES (?, ?, ?, ?, ?, 1.0)
-                """, (product, color, component, monthly_avg, recommended_stock))
-        
-        self.db.conn.commit()
-        return True
+        except Exception as e:
+            print(f"Erreur lors de la suppression de la variante de couleur: {e}")
+            return False
     
-    def get_inventory_forecast(self, product=None, color=None, component=None):
+    def get_available_colors(self):
         """
-        Récupère les prévisions d'inventaire filtrées par produit, couleur ou composant
+        Récupère la liste de toutes les couleurs disponibles dans l'inventaire
+        
+        Returns:
+            list: Liste des couleurs uniques
         """
-        forecasts = []
-        
-        query = """
-            SELECT 
-                product, color, component, 
-                avg_monthly_sales, recommended_stock, trend_factor
-            FROM inventory_forecast
-        """
-        
-        conditions = []
-        params = []
-        
-        if product:
-            conditions.append("product = ?")
-            params.append(product)
-        
-        if color:
-            conditions.append("color = ?")
-            params.append(color)
-        
-        if component is not None:  # Pour permettre component=None explicitement
-            conditions.append("component = ?")
-            params.append(component)
-        
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        
-        query += " ORDER BY product, component, color"
-        
-        self.db.cursor.execute(query, params)
-        
-        for row in self.db.cursor.fetchall():
-            forecasts.append({
-                'product': row['product'],
-                'color': row['color'],
-                'component': row['component'],
-                'avg_monthly_sales': row['avg_monthly_sales'],
-                'recommended_stock': row['recommended_stock'],
-                'trend_factor': row['trend_factor'],
-                'forecast_stock': int(row['recommended_stock'] * row['trend_factor'])
-            })
-        
-        return forecasts
-    
-    def get_inventory_with_forecast(self):
-        """
-        Récupère l'inventaire avec les prévisions
-        """
-        inventory = []
-        
-        self.db.cursor.execute("""
-            SELECT 
-                i.id, i.product, i.color, i.component, i.stock, i.alert_threshold,
-                ifnull(f.avg_monthly_sales, 0) as avg_monthly_sales,
-                ifnull(f.recommended_stock, 0) as recommended_stock,
-                ifnull(f.trend_factor, 1.0) as trend_factor
-            FROM inventory i
-            LEFT JOIN inventory_forecast f ON 
-                i.product = f.product AND 
-                i.color = f.color AND 
-                (i.component = f.component OR (i.component IS NULL AND f.component IS NULL))
-            ORDER BY i.product, i.component, i.color
-        """)
-        
-        for row in self.db.cursor.fetchall():
-            forecast_stock = int(row['recommended_stock'] * row['trend_factor'])
-            stock_status = 'OK'
-            
-            if row['stock'] < row['alert_threshold']:
-                stock_status = 'Low'
-            
-            if row['stock'] < forecast_stock:
-                stock_status = 'Below Forecast'
-            
-            inventory.append({
-                'id': row['id'],
-                'product': row['product'],
-                'color': row['color'],
-                'component': row['component'],
-                'stock': row['stock'],
-                'alert_threshold': row['alert_threshold'],
-                'avg_monthly_sales': row['avg_monthly_sales'],
-                'recommended_stock': row['recommended_stock'],
-                'forecast_stock': forecast_stock,
-                'status': stock_status
-            })
-        
-        return inventory
-    
-    def delete_inventory_item(self, product, color, component=None):
-        """Supprime complètement un item d'inventaire"""
-        query = """
-            DELETE FROM inventory
-            WHERE product = ? AND color = ?
-        """
-        
-        params = [product, color]
-        
-        if component is not None:
-            query += " AND component = ?"
-            params.append(component)
-        else:
-            query += " AND component IS NULL"
-        
-        self.db.cursor.execute(query, params)
-        self.db.conn.commit()
-        return True
+        return self.inventory.get_available_colors()
