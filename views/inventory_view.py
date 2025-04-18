@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QColor, QBrush, QCursor, QFont
 from controllers.inventory_controller import InventoryController
+from controllers.order_controller import OrderController
 from config import COLORS, PRODUCTS, UI_COLORS, COLOR_HEX_MAP
 
 class ColorIndicator(QFrame):
@@ -34,7 +35,7 @@ class ColorIndicator(QFrame):
 class AssembleDialog(QDialog):
     """Dialogue pour assembler un produit"""
     
-     def __init__(self, product_name, product_details, available_colors, parent=None):
+    def __init__(self, product_name, product_details, available_colors, parent=None):
         super().__init__(parent)
         self.product_name = product_name
         self.product_details = product_details

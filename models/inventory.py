@@ -233,21 +233,23 @@ class InventoryManager:
         self.products = {}  # {nom: Product}
         self.color_variants = {}  # {variante: ColorVariant}
     
-    def add_component(self, name, color, stock=0, alert_threshold=3):
-        """Ajoute un composant à l'inventaire"""
-        if name not in self.components:
-            self.components[name] = {}
-        
-        if color not in self.components[name]:
-            self.components[name][color] = Component(name, color, stock, alert_threshold)
-        else:
-            # Mettre à jour le stock si le composant existe déjà
-            self.components[name][color].stock += stock
-            self.components[name][color].alert_threshold = alert_threshold
-        
-        return self.components[name][color]
+    def add_product(self, name, description=""):
+        """Ajoute un produit au catalogue"""
+        try:
+            # Vérifier si le produit existe déjà
+            if name in self.products:
+                return self.products[name]
+            
+            # Créer un nouveau produit
+            product = Product(name, description)
+            self.products[name] = product
+            return product
+        except Exception as e:
+            # Pour le diagnostic
+            print(f"Exception dans InventoryManager.add_product: {repr(e)}")
+            raise  # Re-lever l'exception pour qu'elle puisse être gérée plus haut
     
-    ddef add_component(self, name, color, stock=0, alert_threshold=3, description=""):
+    def add_component(self, name, color, stock=0, alert_threshold=3, description=""):
         """Ajoute un composant à l'inventaire"""
         if name not in self.components:
             self.components[name] = {}

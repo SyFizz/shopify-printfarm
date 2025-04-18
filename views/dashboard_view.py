@@ -521,8 +521,11 @@ class DashboardWidget(QWidget):
         
         # Ajouter les nouveaux produits
         for product in low_stock:
+            # Vérifier si on utilise 'name' ou 'product' comme clé
+            product_name = product.get("name", product.get("product", "Inconnu"))
+            
             stock_row = self.update_stock_row(
-                product["name"],  # Utiliser "name" au lieu de "product"
+                product_name,
                 product["color"],
                 product["stock"],
                 product["alert_threshold"]

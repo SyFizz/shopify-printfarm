@@ -681,7 +681,7 @@ class InventoryController:
     
     def add_product(self, product_name, description=""):
         """
-        Ajoute un nouveau produit au catalogue
+        Ajoute un nouveau produit au catalogue avec diagnostic renforcé
         
         Args:
             product_name (str): Nom du produit
@@ -691,26 +691,80 @@ class InventoryController:
             bool: True si l'ajout a réussi, False sinon
         """
         try:
-            # Vérifier si le produit existe déjà
-            if product_name in self.inventory.products:
+            print(f"--- Début de add_product pour '{product_name}' ---")
+            
+            # Vérifier la connexion à la base de données
+            if self.db is None:
+                print("Erreur: db est None")
                 return False
             
+            if self.db.conn is None:
+                print("Erreur: db.conn est None")
+                return False
+            
+            if self.db.cursor is None:
+                print("Erreur: db.cursor est None")
+                return False
+            
+            # Vérifier si le produit existe déjà
+            print(f"Vérification si le produit '{product_name}' existe dans l'inventaire...")
+            if product_name in self.inventory.products:
+                print(f"Produit '{product_name}' déjà existant dans l'inventaire")
+                return True
+            
+            # Vérifier si le produit existe déjà dans la base de données
+            print(f"Vérification si le produit '{product_name}' existe dans la base de données...")
+            self.db.cursor.execute("SELECT COUNT(*) FROM products WHERE name = ?", (product_name,))
+            count = self.db.cursor.fetchone()[0]
+            if count > 0:
+                print(f"Produit '{product_name}' déjà existant dans la base de données")
+                # Charger en mémoire si pas déjà fait
+                self.inventory.add_product(product_name, description)
+                return True
+            
             # Ajouter en mémoire
-            self.inventory.add_product(product_name, description)
+            print(f"Ajout du produit '{product_name}' en mémoire...")
+            try:
+                self.inventory.add_product(product_name, description)
+                print("Produit ajouté en mémoire avec succès")
+            except Exception as mem_err:
+                print(f"Erreur lors de l'ajout en mémoire: {mem_err}")
+                raise
             
             # Ajouter dans la base de données
-            self.db.cursor.execute("""
-                INSERT INTO products (name, description)
-                VALUES (?, ?)
-            """, (product_name, description))
+            print(f"Ajout du produit '{product_name}' dans la base de données...")
+            try:
+                self.db.cursor.execute("""
+                    INSERT INTO products (name, description)
+                    VALUES (?, ?)
+                """, (product_name, description))
+                print("Requête SQL exécutée avec succès")
+            except Exception as sql_err:
+                print(f"Erreur SQL: {sql_err}")
+                raise
             
+            # Commit des changements
+            print("Commit des changements...")
             self.db.conn.commit()
+            print(f"--- Fin de add_product pour '{product_name}': SUCCÈS ---")
             return True
             
         except Exception as e:
-            print(f"Erreur lors de l'ajout du produit: {e}")
+            print(f"Erreur détaillée lors de l'ajout du produit '{product_name}': {repr(e)}")
+            print(f"Type d'erreur: {type(e).__name__}")
+            
+            # En cas d'erreur, faire un rollback
+            try:
+                if hasattr(self.db, 'conn') and self.db.conn:
+                    self.db.conn.rollback()
+                    print("Rollback effectué avec succès")
+            except Exception as rollback_err:
+                print(f"Erreur lors du rollback: {rollback_err}")
+            
+            print(f"--- Fin de add_product pour '{product_name}': ÉCHEC ---")
             return False
-    
+        
+        
     def add_component_to_product(self, product_name, component_name, quantity=1, color_constraint=None):
         """
         Ajoute un composant à un produit

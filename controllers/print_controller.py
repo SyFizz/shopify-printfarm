@@ -1,4 +1,5 @@
 from models.database import Database
+from controllers.inventory_controller import InventoryController
 from config import DATABASE_PATH, PRIORITIES
 
 class PrintController:
