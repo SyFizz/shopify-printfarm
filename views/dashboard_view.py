@@ -359,6 +359,26 @@ class DashboardWidget(QWidget):
         chart.setAnimationOptions(QChart.SeriesAnimations)
         chart.setTitle("")
         
+        # Vérifier si la liste est vide
+        if not popular_products:
+            # Créer un graphique vide avec un message
+            no_data_series = QBarSeries()
+            chart.addSeries(no_data_series)
+            
+            # Axes vides
+            axis_x = QBarCategoryAxis()
+            axis_x.append(["Aucune donnée"])
+            chart.addAxis(axis_x, Qt.AlignBottom)
+            no_data_series.attachAxis(axis_x)
+            
+            axis_y = QValueAxis()
+            axis_y.setRange(0, 10)
+            chart.addAxis(axis_y, Qt.AlignLeft)
+            no_data_series.attachAxis(axis_y)
+            
+            self.products_chart_view.setChart(chart)
+            return
+        
         # Créer la série de données
         bar_set = QBarSet("Quantité")
         
@@ -383,7 +403,8 @@ class DashboardWidget(QWidget):
         
         # Créer l'axe des valeurs
         axis_y = QValueAxis()
-        axis_y.setRange(0, max([p["total"] for p in popular_products]) * 1.1)
+        max_value = max([p["total"] for p in popular_products]) if popular_products else 10
+        axis_y.setRange(0, max_value * 1.1)
         chart.addAxis(axis_y, Qt.AlignLeft)
         series.attachAxis(axis_y)
         
@@ -401,6 +422,25 @@ class DashboardWidget(QWidget):
         chart = QChart()
         chart.setAnimationOptions(QChart.SeriesAnimations)
         chart.setTitle("")
+        
+        # Vérifier si la liste est vide
+        if not popular_colors:
+            # Créer une série vide
+            series = QPieSeries()
+            series.append("Aucune donnée", 1)
+            
+            # Ajouter la série au graphique
+            chart.addSeries(series)
+            
+            # Configurer le graphique
+            chart.legend().setVisible(True)
+            chart.legend().setAlignment(Qt.AlignRight)
+            chart.setBackgroundVisible(False)
+            chart.setPlotAreaBackgroundVisible(False)
+            
+            # Associer le graphique à la vue
+            self.colors_chart_view.setChart(chart)
+            return
         
         # Créer la série de données
         series = QPieSeries()
@@ -482,7 +522,7 @@ class DashboardWidget(QWidget):
         # Ajouter les nouveaux produits
         for product in low_stock:
             stock_row = self.update_stock_row(
-                product["product"],
+                product["name"],  # Utiliser "name" au lieu de "product"
                 product["color"],
                 product["stock"],
                 product["alert_threshold"]

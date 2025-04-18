@@ -420,3 +420,29 @@ class PrintController:
             print(f"Erreur lors du démarrage de l'impression partielle: {e}")
             self.db.conn.rollback()
             raise
+
+    def get_color_summary(self):
+        """
+        Récupère un résumé des couleurs à imprimer pour le tableau de bord
+        
+        Returns:
+            list: Liste des couleurs avec le nombre de produits et quantités
+        """
+        color_summary = []
+        
+        self.db.cursor.execute("""
+            SELECT color, COUNT(DISTINCT product) as product_count, SUM(quantity) as total_quantity
+            FROM order_items
+            WHERE status = 'À imprimer' OR status = 'En impression'
+            GROUP BY color
+            ORDER BY total_quantity DESC
+        """)
+        
+        for row in self.db.cursor.fetchall():
+            color_summary.append({
+                "color": row["color"],
+                "product_count": row["product_count"],
+                "total_quantity": row["total_quantity"]
+            })
+        
+        return color_summary

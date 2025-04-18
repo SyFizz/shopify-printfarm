@@ -11,7 +11,7 @@ class StatsManager:
         self.print_controller = PrintController()
         self.inventory_controller = InventoryController()
     
-    """ def get_dashboard_stats(self):
+    def get_dashboard_stats(self):
         stats = {}
         
         # Statistiques des commandes
@@ -42,12 +42,11 @@ class StatsManager:
         color_summary = self.print_controller.get_color_summary()
         stats["color_summary"] = color_summary
         
-        return stats """
-        
+        return stats 
+    
+    """  
     def get_dashboard_stats(self):
-        """
         Récupère toutes les statistiques pour le tableau de bord
-        """
         stats = {}
         
         # Statistiques des commandes
@@ -115,7 +114,7 @@ class StatsManager:
         ]
         
         return stats
-    
+    """
     def get_print_efficiency(self, days=30):
         """
         Calcule l'efficacité d'impression: nombre de pièces imprimées par jour

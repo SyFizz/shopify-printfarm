@@ -41,6 +41,7 @@ class InventoryController:
                 color TEXT NOT NULL,
                 stock INTEGER DEFAULT 0,
                 alert_threshold INTEGER DEFAULT 3,
+                description TEXT DEFAULT '',
                 UNIQUE(name, color)
             )
         """)
@@ -88,6 +89,29 @@ class InventoryController:
             )
         """)
         
+        # Mettre à jour le schéma si nécessaire pour ajouter des colonnes manquantes
+        try:
+            # Vérifier si la colonne description existe dans la table components
+            self.db.cursor.execute("PRAGMA table_info(components)")
+            columns = [column[1] for column in self.db.cursor.fetchall()]
+            
+            # Ajouter la colonne description si elle n'existe pas
+            if 'description' not in columns:
+                self.db.cursor.execute("ALTER TABLE components ADD COLUMN description TEXT DEFAULT ''")
+                print("Colonne 'description' ajoutée à la table 'components'")
+            
+            # Vérifier si la colonne color_constraint existe dans la table product_components
+            self.db.cursor.execute("PRAGMA table_info(product_components)")
+            pc_columns = [column[1] for column in self.db.cursor.fetchall()]
+            
+            # Ajouter la colonne color_constraint si elle n'existe pas
+            if 'color_constraint' not in pc_columns:
+                self.db.cursor.execute("ALTER TABLE product_components ADD COLUMN color_constraint TEXT")
+                print("Colonne 'color_constraint' ajoutée à la table 'product_components'")
+                
+        except Exception as e:
+            print(f"Erreur lors de la mise à jour du schéma de la base de données: {e}")
+        
         self.db.conn.commit()
     
     def _load_components(self):
@@ -111,10 +135,7 @@ class InventoryController:
     def _initialize_default_components(self):
         """Initialise des composants par défaut pour les produits courants"""
         # Liste des composants communs pour les fidget toys
-        default_components = [
-            "Corps", "Montant", "Roue", "Roue gauche", "Roue droite",
-            "Pièce centrale", "Pièce externe", "Bouton"
-        ]
+        default_components = []
         
         # Créer chaque composant dans chaque couleur disponible
         for component in default_components:
@@ -176,33 +197,7 @@ class InventoryController:
     def _initialize_default_products(self):
         """Initialise des produits par défaut avec leurs composants"""
         # Définitions des produits de base
-        default_products = [
-            {
-                "name": "StarNest",
-                "description": "Fidget toy en forme d'étoile avec des pièces imbriquées",
-                "components": [
-                    {"name": "Corps", "quantity": 1, "color_constraint": "same_as_main"}
-                ]
-            },
-            {
-                "name": "SpinRing",
-                "description": "Anneau rotatif avec deux roues",
-                "components": [
-                    {"name": "Montant", "quantity": 2, "color_constraint": "same_as_main"},
-                    {"name": "Roue droite", "quantity": 1, "color_constraint": "same_as:Roue gauche"},
-                    {"name": "Roue gauche", "quantity": 1, "color_constraint": None}
-                ]
-            },
-            {
-                "name": "ClickyPaw",
-                "description": "Fidget toy en forme de patte avec boutons cliquables",
-                "components": [
-                    {"name": "Pièce externe", "quantity": 4, "color_constraint": "same_as_main"},
-                    {"name": "Pièce centrale", "quantity": 1, "color_constraint": "same_as_main"},
-                    {"name": "Montant", "quantity": 1, "color_constraint": None}
-                ]
-            }
-        ]
+        default_products = []
         
         # Créer chaque produit
         for product_def in default_products:
@@ -417,13 +412,14 @@ class InventoryController:
             print(f"Erreur lors de la mise à jour du seuil d'alerte: {e}")
             return False
     
-    def add_new_component(self, component_name, initial_stock=None):
+    def add_new_component(self, component_name, initial_stock=None, description=""):
         """
         Ajoute un nouveau type de composant (dans toutes les couleurs)
         
         Args:
             component_name (str): Nom du nouveau composant
             initial_stock (dict, optional): Stock initial par couleur {couleur: quantité}
+            description (str, optional): Description du composant
             
         Returns:
             bool: True si l'ajout a réussi, False sinon
@@ -437,13 +433,13 @@ class InventoryController:
                 stock = initial_stock.get(color, 0)
                 
                 # Ajouter en mémoire
-                self.inventory.add_component(component_name, color, stock)
+                self.inventory.add_component(component_name, color, stock, 3, description)
                 
-                # Ajouter dans la base de données
+                # Ajouter dans la base de données - Modifier pour inclure la description
                 self.db.cursor.execute("""
-                    INSERT OR IGNORE INTO components (name, color, stock, alert_threshold)
-                    VALUES (?, ?, ?, 3)
-                """, (component_name, color, stock))
+                    INSERT OR IGNORE INTO components (name, color, stock, alert_threshold, description)
+                    VALUES (?, ?, ?, 3, ?)
+                """, (component_name, color, stock, description))
             
             self.db.conn.commit()
             return True
@@ -981,3 +977,62 @@ class InventoryController:
             list: Liste des couleurs uniques
         """
         return self.inventory.get_available_colors()
+    
+    def get_inventory_summary(self):
+        """
+        Récupère un résumé des statistiques d'inventaire
+        
+        Returns:
+            dict: Dictionnaire avec les statistiques d'inventaire
+        """
+        # Récupérer tous les produits et composants
+        products = self.get_all_products()
+        components = self.get_all_components()
+        
+        # Calculer les statistiques
+        total_products = 0
+        total_assembled = 0
+        for product in products:
+            # Compter le nombre total de produits assemblés
+            product_count = sum(product["assembled_stock"].values())
+            total_assembled += product_count
+            total_products += 1
+        
+        # Calculer les statistiques des composants
+        total_components = 0
+        total_component_types = len({comp["name"] for comp in components})
+        total_component_stock = sum(comp["stock"] for comp in components)
+        
+        # Calculer le stock moyen par produit
+        avg_stock = 0
+        if total_products > 0:
+            avg_stock = total_assembled / total_products
+        
+        return {
+            "total_products": total_products,               # Nombre de types de produits
+            "total_assembled": total_assembled,             # Nombre total de produits assemblés
+            "total_component_types": total_component_types, # Nombre de types de composants
+            "total_component_stock": total_component_stock, # Stock total de composants
+            "avg_stock_per_product": round(avg_stock, 1)    # Stock moyen par produit
+        }
+    
+    def get_low_stock_products(self):
+        """
+        Récupère la liste des composants en rupture de stock ou sous le seuil d'alerte
+        
+        Returns:
+            list: Liste des composants avec stock faible
+        """
+        low_stock_components = self.get_low_stock_components()
+        
+        # Formater les données pour le tableau de bord
+        formatted_stock = []
+        for component in low_stock_components:
+            formatted_stock.append({
+                "product": component["name"],
+                "color": component["color"],
+                "stock": component["stock"],
+                "alert_threshold": component["alert_threshold"]
+            })
+        
+        return formatted_stock

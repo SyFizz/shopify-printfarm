@@ -504,8 +504,8 @@ class MainWindow(QMainWindow):
                 return
         
         # Créer un nouvel onglet d'inventaire
-        from views.inventory_view import InventoryWidget
-        inventory_widget = InventoryWidget(self)
+        from views.inventory_view import InventoryView
+        inventory_widget = InventoryView(self)
         
         # Ajouter l'onglet
         self.tabs.addTab(inventory_widget, "Inventaire")

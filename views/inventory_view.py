@@ -92,28 +92,28 @@ class AssembleDialog(QDialog):
             self.component_layout = QFormLayout(component_group)
             
             for component in self.product_details["components"]:
-                comp_name = component["name"]
+                name = component["name"]
                 
-                # Vérifier si le composant a une contrainte de couleur
                 if "color_constraint" in component:
                     constraint = component["color_constraint"]
                     
-                    # Si la contrainte est déjà fixée, afficher uniquement l'information
-                    if constraint.startswith("fixed:") or constraint == "same_as_main" or constraint.startswith("same_as:"):
-                        label = QLabel(f"<i>{self.get_constraint_description(constraint)}</i>")
-                        label.setStyleSheet("color: #666;")
-                        component_layout.addRow(f"{comp_name}:", label)
+                    # Si la contrainte n'est pas fixe, ajouter un sélecteur
+                    if constraint is None:
+                        color_selector = QComboBox()
+                        color_selector.addItem("Même que le produit")
+                        
+                        for color in sorted([c for c in COLORS if c != "Aléatoire"]):
+                            color_selector.addItem(color)
+                        
+                        color_selector.currentTextChanged.connect(
+                            lambda text, comp_name=name: self.on_component_color_changed(comp_name, text)
+                        )
+                        
+                        self.component_layout.addRow(f"{name}:", color_selector)
                     else:
-                        # Permettre une sélection personnalisée
-                        color_combo = QComboBox()
-                        for color in sorted(COLORS):
-                            if color != "Aléatoire":  # Ne pas inclure "Aléatoire" dans les options de composants
-                                color_combo.addItem(color)
-                        
-                        component_layout.addRow(f"{comp_name}:", color_combo)
-                        
-                        # Stocker le combo pour référence ultérieure
-                        self.component_colors[comp_name] = color_combo
+                        # Pour les contraintes fixes, montrer simplement l'information
+                        constraint_desc = self.get_constraint_description(constraint)
+                        self.component_layout.addRow(f"{name}:", QLabel(constraint_desc))
             
             layout.addWidget(component_group)
         
@@ -125,6 +125,7 @@ class AssembleDialog(QDialog):
         self.quantity_spin.setMinimum(1)
         self.quantity_spin.setMaximum(100)  # Ajuster selon les besoins
         self.quantity_spin.setValue(1)
+        self.quantity_spin.valueChanged.connect(lambda: self.update_component_colors(self.color_combo.currentText()))
         quantity_layout.addWidget(self.quantity_spin)
         
         layout.addLayout(quantity_layout)
@@ -181,6 +182,19 @@ class AssembleDialog(QDialog):
             return f"Même couleur que le composant '{ref_component}'"
         return constraint
     
+    def on_component_color_changed(self, component_name, text):
+        """Gère le changement de couleur pour un composant spécifique"""
+        if text == "Même que le produit":
+            # Utiliser la même couleur que le produit principal
+            if component_name in self.component_colors:
+                del self.component_colors[component_name]
+        else:
+            # Utiliser une couleur spécifique
+            self.component_colors[component_name] = text
+        
+        # Mettre à jour l'affichage
+        self.update_component_colors(self.color_combo.currentText())
+    
     def update_component_colors(self, main_color):
         """Met à jour l'affichage des composants en fonction de la couleur principale"""
         # Si la couleur est aléatoire, utiliser la première couleur disponible pour l'aperçu
@@ -202,16 +216,23 @@ class AssembleDialog(QDialog):
                 constraint = component["color_constraint"]
                 
                 if constraint == "same_as_main":
+                    # Même couleur que le produit principal
                     comp_color = display_color
-                elif constraint.startswith("fixed:"):
+                elif constraint and constraint.startswith("fixed:"):
+                    # Couleur fixe
                     comp_color = constraint.split(":", 1)[1]
-                elif constraint.startswith("same_as:"):
+                elif constraint and constraint.startswith("same_as:"):
+                    # Même couleur qu'un autre composant
                     ref_component = constraint.split(":", 1)[1]
-                    # Pour simplifier, utiliser display_color pour l'instant
-                    comp_color = display_color
-                elif comp_name in self.component_colors:
-                    # Utiliser la couleur sélectionnée manuellement
-                    comp_color = self.component_colors[comp_name].currentText()
+                    # Trouver la couleur du composant référencé
+                    for c in required_components:
+                        if c["name"] == ref_component:
+                            comp_color = c["color"]
+                            break
+                
+            # Si une couleur spécifique est définie dans component_colors, l'utiliser
+            if comp_name in self.component_colors:
+                comp_color = self.component_colors[comp_name]
             
             required_components.append({
                 "name": comp_name,
@@ -221,6 +242,9 @@ class AssembleDialog(QDialog):
         
         # Mettre à jour le tableau des composants
         self.components_table.setRowCount(len(required_components))
+        
+        # Vérifier si l'assemblage est possible
+        can_assemble = True
         
         for row, comp in enumerate(required_components):
             # Composant
@@ -234,11 +258,31 @@ class AssembleDialog(QDialog):
             # Quantité requise
             self.components_table.setItem(row, 2, QTableWidgetItem(str(comp["quantity"])))
             
-            # Disponible (à implémenter avec les données réelles)
-            self.components_table.setItem(row, 3, QTableWidgetItem("..."))
+            # Stock disponible (peut être implémenté avec les données réelles)
+            available = InventoryController().get_component_stock(comp["name"], comp["color"])
+            available_item = QTableWidgetItem(str(available))
+            
+            # Mettre en rouge si le stock est insuffisant
+            if available < comp["quantity"]:
+                available_item.setForeground(QColor("red"))
+                can_assemble = False
+            
+            self.components_table.setItem(row, 3, available_item)
+        
+        # Désactiver le bouton si l'assemblage n'est pas possible
+        self.assemble_btn.setEnabled(can_assemble)
         
         # Redimensionner les lignes pour un meilleur affichage
         self.components_table.resizeRowsToContents()
+    
+    def get_assembly_data(self):
+        """Retourne les données pour l'assemblage"""
+        return {
+            "product": self.product_name,
+            "color": self.color_combo.currentText(),
+            "quantity": self.quantity_spin.value(),
+            "component_colors": self.component_colors.copy()
+        }
 
 class InventoryView(QWidget):
     """Widget principal pour la gestion de l'inventaire"""
@@ -317,6 +361,13 @@ class InventoryView(QWidget):
         self.color_filter.currentTextChanged.connect(self.apply_component_filters)
         filters_layout.addWidget(self.color_filter)
         
+        # Nouveau filtre pour les produits qui utilisent ce composant
+        filters_layout.addWidget(QLabel("Produit:"))
+        self.product_component_filter = QComboBox()
+        self.product_component_filter.addItem("Tous")
+        self.product_component_filter.currentTextChanged.connect(self.apply_component_filters)
+        filters_layout.addWidget(self.product_component_filter)
+        
         filters_layout.addStretch()
         
         # Bouton pour ajouter un nouveau composant
@@ -329,9 +380,9 @@ class InventoryView(QWidget):
         
         # Tableau des composants
         self.components_table = QTableWidget()
-        self.components_table.setColumnCount(5)
+        self.components_table.setColumnCount(6)  # Ajouté une colonne pour les produits qui utilisent ce composant
         self.components_table.setHorizontalHeaderLabels(
-            ["Composant", "Couleur", "Stock", "Seuil d'alerte", "Actions"]
+            ["Composant", "Couleur", "Utilisé dans", "Stock", "Seuil d'alerte", "Actions"]
         )
         self.components_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.components_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -537,6 +588,17 @@ class InventoryView(QWidget):
         self.component_filter.addItems(component_names)
         self.component_filter.blockSignals(False)
         
+        # Mise à jour du filtre de produits
+        self.product_component_filter.blockSignals(True)
+        self.product_component_filter.clear()
+        self.product_component_filter.addItem("Tous")
+        
+        # Collecter les noms uniques de produits
+        all_products = self.inventory_controller.get_all_products()
+        product_names = sorted(list(set(prod["name"] for prod in all_products)))
+        self.product_component_filter.addItems(product_names)
+        self.product_component_filter.blockSignals(False)
+        
         # Appliquer les filtres actuels
         self.apply_component_filters()
     
@@ -545,9 +607,20 @@ class InventoryView(QWidget):
         # Récupérer les critères de filtre
         component_filter = self.component_filter.currentText()
         color_filter = self.color_filter.currentText()
+        product_filter = self.product_component_filter.currentText()
         
         # Récupérer toutes les données
         all_components = self.inventory_controller.get_all_components()
+        all_products = self.inventory_controller.get_all_products()
+        
+        # Créer un dictionnaire pour mapper les composants aux produits qui les utilisent
+        component_to_products = {}
+        for product in all_products:
+            for comp in product["components"]:
+                if comp["name"] not in component_to_products:
+                    component_to_products[comp["name"]] = []
+                if product["name"] not in component_to_products[comp["name"]]:
+                    component_to_products[comp["name"]].append(product["name"])
         
         # Appliquer les filtres
         filtered_components = []
@@ -556,6 +629,11 @@ class InventoryView(QWidget):
                 continue
             if color_filter != "Toutes" and comp["color"] != color_filter:
                 continue
+            if product_filter != "Tous":
+                # Vérifier si le composant est utilisé dans le produit sélectionné
+                used_in_products = component_to_products.get(comp["name"], [])
+                if product_filter not in used_in_products:
+                    continue
             filtered_components.append(comp)
         
         # Mise à jour du tableau
@@ -570,14 +648,18 @@ class InventoryView(QWidget):
             color_item.setBackground(QColor(COLOR_HEX_MAP.get(comp["color"], "#CCCCCC")))
             self.components_table.setItem(row, 1, color_item)
             
+            # Produits qui utilisent ce composant
+            used_in_products = component_to_products.get(comp["name"], [])
+            self.components_table.setItem(row, 2, QTableWidgetItem(", ".join(sorted(used_in_products))))
+            
             # Stock
             stock_item = QTableWidgetItem(str(comp["stock"]))
             if comp["stock"] <= comp["alert_threshold"]:
                 stock_item.setBackground(QColor("#FFCCCC"))  # Rouge clair pour le stock bas
-            self.components_table.setItem(row, 2, stock_item)
+            self.components_table.setItem(row, 3, stock_item)
             
             # Seuil d'alerte
-            self.components_table.setItem(row, 3, QTableWidgetItem(str(comp["alert_threshold"])))
+            self.components_table.setItem(row, 4, QTableWidgetItem(str(comp["alert_threshold"])))
             
             # Actions
             actions_widget = QWidget()
@@ -606,7 +688,7 @@ class InventoryView(QWidget):
             actions_layout.addWidget(remove_btn)
             actions_layout.addWidget(edit_btn)
             
-            self.components_table.setCellWidget(row, 4, actions_widget)
+            self.components_table.setCellWidget(row, 5, actions_widget)
         
         # Ajuster la hauteur des lignes
         self.components_table.resizeRowsToContents()
@@ -767,3 +849,735 @@ class InventoryView(QWidget):
         
         # Ajuster la hauteur des lignes
         self.components_detail_table.resizeRowsToContents()
+    
+    def update_assemblable_products(self):
+        """Met à jour la liste des produits assemblables"""
+        # Récupérer les données des produits assemblables
+        assemblable = self.inventory_controller.get_assemblable_products()
+        all_products = self.inventory_controller.get_all_products()
+        
+        # Préparer les données pour l'affichage
+        assemblable_products = []
+        
+        for product_name, colors in assemblable.items():
+            # Trouver les détails du produit
+            product_details = next((p for p in all_products if p["name"] == product_name), None)
+            
+            if not product_details:
+                continue
+            
+            # Pour chaque couleur assemblable
+            for color, quantity in colors.items():
+                if quantity > 0:
+                    # Créer une entrée pour cette combinaison produit/couleur
+                    entry = {
+                        "name": product_name,
+                        "color": color,
+                        "quantity": quantity,
+                        "components": product_details["components"]
+                    }
+                    
+                    assemblable_products.append(entry)
+        
+        # Mise à jour du tableau des assemblables
+        self.assemblable_table.setRowCount(len(assemblable_products))
+        
+        for row, product in enumerate(assemblable_products):
+            # Produit
+            self.assemblable_table.setItem(row, 0, QTableWidgetItem(product["name"]))
+            
+            # Couleur
+            color_item = QTableWidgetItem(product["color"])
+            color_item.setBackground(QColor(COLOR_HEX_MAP.get(product["color"], "#CCCCCC")))
+            self.assemblable_table.setItem(row, 1, color_item)
+            
+            # Quantité assemblable
+            self.assemblable_table.setItem(row, 2, QTableWidgetItem(str(product["quantity"])))
+            
+            # Composants (résumé)
+            components_summary = ", ".join(f"{c['quantity']} {c['name']}" for c in product["components"])
+            self.assemblable_table.setItem(row, 3, QTableWidgetItem(components_summary))
+            
+            # Action d'assemblage
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            
+            assemble_btn = QPushButton("Assembler")
+            assemble_btn.clicked.connect(lambda checked=False, name=product["name"], color=product["color"]:
+                                       self.assemble_product_dialog(name, color))
+            actions_layout.addWidget(assemble_btn)
+            
+            self.assemblable_table.setCellWidget(row, 4, actions_widget)
+        
+        # Mettre à jour le tableau des composants disponibles
+        self.update_components_stock_table()
+    
+    def update_components_stock_table(self):
+        """Met à jour le tableau des stocks de composants"""
+        # Récupérer les données des composants
+        components = self.inventory_controller.get_all_components()
+        
+        # Filtrer pour n'afficher que les composants avec un stock > 0
+        available_components = [comp for comp in components if comp["stock"] > 0]
+        
+        # Mise à jour du tableau
+        self.assembly_components_table.setRowCount(len(available_components))
+        
+        for row, comp in enumerate(available_components):
+            # Composant
+            self.assembly_components_table.setItem(row, 0, QTableWidgetItem(comp["name"]))
+            
+            # Couleur
+            color_item = QTableWidgetItem(comp["color"])
+            color_item.setBackground(QColor(COLOR_HEX_MAP.get(comp["color"], "#CCCCCC")))
+            self.assembly_components_table.setItem(row, 1, color_item)
+            
+            # Stock
+            stock_item = QTableWidgetItem(str(comp["stock"]))
+            if comp["stock"] <= comp["alert_threshold"]:
+                stock_item.setBackground(QColor("#FFCCCC"))  # Rouge clair pour le stock bas
+            self.assembly_components_table.setItem(row, 2, stock_item)
+        
+        # Ajuster la hauteur des lignes
+        self.assembly_components_table.resizeRowsToContents()
+    
+    def assemble_product_dialog(self, product_name, color):
+        """Affiche le dialogue pour assembler un produit"""
+        # Récupérer les détails du produit
+        product_details = self.inventory_controller.get_product_details(product_name)
+        
+        if not product_details:
+            return
+        
+        # Récupérer les couleurs disponibles pour ce produit
+        assemblable = self.inventory_controller.get_assemblable_products()
+        available_colors = {}
+        
+        if product_name in assemblable:
+            available_colors = assemblable[product_name]
+        
+        # Filtrer pour exclure "Aléatoire" si une couleur spécifique est demandée
+        if color != "Aléatoire":
+            if color in available_colors:
+                available_colors = {color: available_colors[color]}
+        
+        # Créer et afficher le dialogue
+        dialog = AssembleDialog(product_name, product_details, available_colors, self)
+        result = dialog.exec_()
+        
+        if result == QDialog.Accepted:
+            # Récupérer les données d'assemblage
+            assembly_data = dialog.get_assembly_data()
+            
+            # Effectuer l'assemblage
+            success, message = self.inventory_controller.assemble_product(
+                assembly_data["product"],
+                assembly_data["color"],
+                assembly_data["quantity"],
+                assembly_data["component_colors"]
+            )
+            
+            # Afficher le résultat
+            if success:
+                QMessageBox.information(self, "Assemblage réussi", message)
+            else:
+                QMessageBox.warning(self, "Erreur d'assemblage", message)
+            
+            # Mettre à jour les données
+            self.load_data()
+    
+    def adjust_component_stock(self, component_name, color, change):
+        """Ajuste le stock d'un composant"""
+        # Pour les ajustements importants, demander la quantité
+        if change == 1 or change == -1:
+            # Pour des changements simples, ajuster directement
+            success = self.inventory_controller.update_component_stock(component_name, color, change)
+            if not success:
+                QMessageBox.warning(self, "Erreur", f"Impossible d'ajuster le stock de {component_name} ({color}).")
+        else:
+            # Pour des ajustements complexes, demander la quantité
+            quantity, ok = QInputDialog.getInt(
+                self, "Ajuster le stock", 
+                f"Nouvelle quantité pour {component_name} ({color}):",
+                0, 0, 1000, 1
+            )
+            
+            if ok:
+                # Calculer le changement nécessaire
+                current_stock = self.inventory_controller.get_component_stock(component_name, color)
+                change = quantity - current_stock
+                
+                # Appliquer le changement
+                success = self.inventory_controller.update_component_stock(component_name, color, change)
+                if not success:
+                    QMessageBox.warning(self, "Erreur", f"Impossible d'ajuster le stock de {component_name} ({color}).")
+        
+        # Mettre à jour les données
+        self.load_components_data()
+    
+    def edit_component_dialog(self, name, color, stock, threshold):
+        """Affiche le dialogue pour modifier un composant"""
+        # Dialogue pour éditer un composant
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Modifier {name} ({color})")
+        layout = QFormLayout(dialog)
+        
+        # Stock actuel
+        stock_spin = QSpinBox()
+        stock_spin.setMinimum(0)
+        stock_spin.setMaximum(1000)
+        stock_spin.setValue(stock)
+        layout.addRow("Stock:", stock_spin)
+        
+        # Seuil d'alerte
+        threshold_spin = QSpinBox()
+        threshold_spin.setMinimum(0)
+        threshold_spin.setMaximum(100)
+        threshold_spin.setValue(threshold)
+        layout.addRow("Seuil d'alerte:", threshold_spin)
+        
+        # Boutons
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        save_btn = QPushButton("Enregistrer")
+        save_btn.clicked.connect(dialog.accept)
+        save_btn.setDefault(True)
+        
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(save_btn)
+        layout.addRow("", buttons)
+        
+        # Afficher le dialogue
+        if dialog.exec_() == QDialog.Accepted:
+            # Mettre à jour le stock si nécessaire
+            new_stock = stock_spin.value()
+            if new_stock != stock:
+                change = new_stock - stock
+                success = self.inventory_controller.update_component_stock(name, color, change)
+                if not success:
+                    QMessageBox.warning(self, "Erreur", f"Impossible de mettre à jour le stock de {name} ({color}).")
+            
+            # Mettre à jour le seuil d'alerte
+            new_threshold = threshold_spin.value()
+            if new_threshold != threshold:
+                success = self.inventory_controller.set_component_alert_threshold(name, color, new_threshold)
+                if not success:
+                    QMessageBox.warning(self, "Erreur", f"Impossible de mettre à jour le seuil d'alerte de {name} ({color}).")
+            
+            # Mettre à jour les données
+            self.load_components_data()
+    
+    def show_component_context_menu(self, position):
+        """Affiche un menu contextuel pour les actions sur les composants"""
+        menu = QMenu()
+        
+        # Récupérer la ligne sélectionnée
+        row = self.components_table.currentRow()
+        if row < 0:
+            return
+        
+        # Récupérer les informations du composant
+        name = self.components_table.item(row, 0).text()
+        color = self.components_table.item(row, 1).text()
+        
+        # Actions disponibles
+        edit_action = menu.addAction("Modifier")
+        add_10_action = menu.addAction("Ajouter 10")
+        add_50_action = menu.addAction("Ajouter 50")
+        set_action = menu.addAction("Définir quantité...")
+        menu.addSeparator()
+        delete_action = menu.addAction("Supprimer")
+        
+        # Afficher le menu et récupérer l'action sélectionnée
+        action = menu.exec_(self.components_table.viewport().mapToGlobal(position))
+        
+        # Traiter l'action sélectionnée
+        if action == edit_action:
+            stock = int(self.components_table.item(row, 3).text())
+            threshold = int(self.components_table.item(row, 4).text())
+            self.edit_component_dialog(name, color, stock, threshold)
+        
+        elif action == add_10_action:
+            self.adjust_component_stock(name, color, 10)
+        
+        elif action == add_50_action:
+            self.adjust_component_stock(name, color, 50)
+        
+        elif action == set_action:
+            self.adjust_component_stock(name, color, 0)  # 0 pour déclencher la demande de quantité
+        
+        elif action == delete_action:
+            # Confirmation avant suppression
+            if QMessageBox.question(self, "Confirmer la suppression", 
+                                  f"Êtes-vous sûr de vouloir supprimer {name} ({color}) ?",
+                                  QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+                
+                success = self.inventory_controller.delete_component(name, color)
+                if not success:
+                    QMessageBox.warning(self, "Erreur", f"Impossible de supprimer {name} ({color}).")
+                else:
+                    self.load_components_data()
+    
+    def show_product_context_menu(self, position):
+        """Affiche un menu contextuel pour les actions sur les produits assemblés"""
+        menu = QMenu()
+        
+        # Récupérer la ligne sélectionnée
+        row = self.products_table.currentRow()
+        if row < 0:
+            return
+        
+        # Récupérer les informations du produit
+        name = self.products_table.item(row, 0).text()
+        color = self.products_table.item(row, 1).text()
+        stock = int(self.products_table.item(row, 2).text())
+        
+        # Actions disponibles
+        add_action = menu.addAction("Ajouter 1")
+        add_more_action = menu.addAction("Ajouter...")
+        remove_action = menu.addAction("Retirer 1")
+        remove_more_action = menu.addAction("Retirer...")
+        set_action = menu.addAction("Définir quantité...")
+        
+        # Désactiver certaines actions si le stock est insuffisant
+        if stock < 1:
+            remove_action.setEnabled(False)
+            remove_more_action.setEnabled(False)
+        
+        # Afficher le menu et récupérer l'action sélectionnée
+        action = menu.exec_(self.products_table.viewport().mapToGlobal(position))
+        
+        # Traiter l'action sélectionnée
+        if action == add_action:
+            self.adjust_product_stock(name, color, 1)
+        
+        elif action == add_more_action:
+            quantity, ok = QInputDialog.getInt(self, "Ajouter au stock", 
+                                              f"Quantité à ajouter pour {name} ({color}):",
+                                              1, 1, 1000, 1)
+            if ok:
+                self.adjust_product_stock(name, color, quantity)
+        
+        elif action == remove_action:
+            self.adjust_product_stock(name, color, -1)
+        
+        elif action == remove_more_action:
+            quantity, ok = QInputDialog.getInt(self, "Retirer du stock", 
+                                              f"Quantité à retirer pour {name} ({color}):",
+                                              1, 1, stock, 1)
+            if ok:
+                self.adjust_product_stock(name, color, -quantity)
+        
+        elif action == set_action:
+            quantity, ok = QInputDialog.getInt(self, "Définir le stock", 
+                                              f"Nouvelle quantité pour {name} ({color}):",
+                                              stock, 0, 1000, 1)
+            if ok:
+                change = quantity - stock
+                self.adjust_product_stock(name, color, change)
+    
+    def adjust_product_stock(self, product_name, color, change):
+        """Ajuste le stock d'un produit assemblé"""
+        success = self.inventory_controller.update_assembled_product_stock(product_name, color, change)
+        
+        if not success:
+            QMessageBox.warning(self, "Erreur", f"Impossible d'ajuster le stock de {product_name} ({color}).")
+        else:
+            # Mettre à jour les données
+            self.load_products_data()
+    
+    def add_new_component_dialog(self):
+        """Affiche le dialogue pour ajouter un nouveau composant"""
+        # Dialogue pour ajouter un nouveau composant
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Nouveau composant")
+        layout = QFormLayout(dialog)
+        
+        # Nom du composant
+        name_edit = QLineEdit()
+        layout.addRow("Nom du composant:", name_edit)
+        
+        # Description du composant (facultative)
+        description_edit = QLineEdit()
+        layout.addRow("Description (facultative):", description_edit)
+        
+        # Association à un produit
+        product_group = QGroupBox("Associer à un produit")
+        product_layout = QVBoxLayout(product_group)
+        
+        # Option pour associer à un produit existant
+        associate_checkbox = QCheckBox("Associer ce composant à un produit existant")
+        product_layout.addWidget(associate_checkbox)
+        
+        # Liste déroulante des produits
+        products_combo = QComboBox()
+        all_products = self.inventory_controller.get_all_products()
+        products_combo.addItems([p["name"] for p in all_products])
+        products_combo.setEnabled(False)
+        product_layout.addWidget(products_combo)
+        
+        # Connecter la case à cocher pour activer/désactiver la liste déroulante
+        associate_checkbox.toggled.connect(products_combo.setEnabled)
+        
+        layout.addRow("", product_group)
+        
+        # Stocks initiaux par couleur
+        stocks_group = QGroupBox("Stocks initiaux par couleur")
+        stocks_layout = QGridLayout(stocks_group)
+        
+        # Créer des spinboxes pour chaque couleur
+        stock_spinboxes = {}
+        
+        row = 0
+        col = 0
+        for color in sorted([c for c in COLORS if c != "Aléatoire"]):
+            color_layout = QHBoxLayout()
+            
+            # Indicateur de couleur
+            color_indicator = ColorIndicator(color)
+            color_layout.addWidget(color_indicator)
+            
+            # Label de couleur
+            color_layout.addWidget(QLabel(color))
+            
+            # SpinBox pour la quantité
+            spinbox = QSpinBox()
+            spinbox.setMinimum(0)
+            spinbox.setMaximum(1000)
+            spinbox.setValue(0)
+            color_layout.addWidget(spinbox)
+            
+            # Stocker la spinbox pour récupérer la valeur plus tard
+            stock_spinboxes[color] = spinbox
+            
+            # Ajouter à la grille
+            stocks_layout.addLayout(color_layout, row, col)
+            
+            # Passer à la colonne suivante ou à la ligne suivante
+            col += 1
+            if col >= 2:  # 2 colonnes
+                col = 0
+                row += 1
+        
+        layout.addRow("", stocks_group)
+        
+        # Boutons
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        save_btn = QPushButton("Ajouter")
+        save_btn.clicked.connect(dialog.accept)
+        save_btn.setDefault(True)
+        
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(save_btn)
+        layout.addRow("", buttons)
+        
+        # Afficher le dialogue
+        if dialog.exec_() == QDialog.Accepted:
+            component_name = name_edit.text().strip()
+            component_description = description_edit.text().strip()
+            
+            if not component_name:
+                QMessageBox.warning(self, "Erreur", "Le nom du composant ne peut pas être vide.")
+                return
+            
+            # Récupérer les stocks initiaux
+            initial_stock = {}
+            for color, spinbox in stock_spinboxes.items():
+                value = spinbox.value()
+                if value > 0:
+                    initial_stock[color] = value
+            
+            # Ajouter le composant
+            success = self.inventory_controller.add_new_component(component_name, initial_stock, component_description)
+            
+            if not success:
+                QMessageBox.warning(self, "Erreur", f"Impossible d'ajouter le composant {component_name}.")
+                return
+            
+            # Si l'utilisateur a choisi d'associer ce composant à un produit
+            if associate_checkbox.isChecked() and products_combo.currentText():
+                product_name = products_combo.currentText()
+                # Ajouter ce composant au produit sélectionné
+                self.inventory_controller.add_component_to_product(product_name, component_name, 1)
+            
+            # Mettre à jour les données
+            self.load_data()
+            
+            QMessageBox.information(self, "Succès", f"Le composant '{component_name}' a été ajouté avec succès.")
+    
+    def add_new_product_dialog(self):
+        """Affiche le dialogue pour ajouter un nouveau produit"""
+        # Dialogue pour ajouter un nouveau produit
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Nouveau produit")
+        layout = QFormLayout(dialog)
+        
+        # Nom du produit
+        name_edit = QLineEdit()
+        layout.addRow("Nom du produit:", name_edit)
+        
+        # Description
+        description_edit = QLineEdit()
+        layout.addRow("Description:", description_edit)
+        
+        # Boutons
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        save_btn = QPushButton("Ajouter")
+        save_btn.clicked.connect(dialog.accept)
+        save_btn.setDefault(True)
+        
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(save_btn)
+        layout.addRow("", buttons)
+        
+        # Afficher le dialogue
+        if dialog.exec_() == QDialog.Accepted:
+            product_name = name_edit.text().strip()
+            description = description_edit.text().strip()
+            
+            if not product_name:
+                QMessageBox.warning(self, "Erreur", "Le nom du produit ne peut pas être vide.")
+                return
+            
+            # Ajouter le produit
+            success = self.inventory_controller.add_product(product_name, description)
+            
+            if not success:
+                QMessageBox.warning(self, "Erreur", f"Impossible d'ajouter le produit {product_name}.")
+            else:
+                # Mettre à jour les données
+                self.load_data()
+                
+                # Sélectionner le nouveau produit dans la liste
+                for i in range(self.products_list.count()):
+                    item = self.products_list.item(i)
+                    if item.text() == product_name:
+                        self.products_list.setCurrentItem(item)
+                        break
+    
+    def add_component_to_product_dialog(self):
+        """Affiche le dialogue pour ajouter un composant à un produit"""
+        # Vérifier qu'un produit est sélectionné
+        current_item = self.products_list.currentItem()
+        if not current_item:
+            QMessageBox.information(self, "Information", "Veuillez d'abord sélectionner un produit.")
+            return
+        
+        product_name = current_item.text()
+        
+        # Dialogue pour ajouter un composant au produit
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Ajouter un composant à {product_name}")
+        layout = QFormLayout(dialog)
+        
+        # Option pour choisir un composant existant ou en créer un nouveau
+        choice_group = QGroupBox("Type de composant")
+        choice_layout = QVBoxLayout(choice_group)
+        
+        existing_radio = QRadioButton("Utiliser un composant existant")
+        new_radio = QRadioButton("Créer un nouveau composant")
+        existing_radio.setChecked(True)
+        
+        choice_layout.addWidget(existing_radio)
+        choice_layout.addWidget(new_radio)
+        layout.addRow("", choice_group)
+        
+        # Widget pour la sélection d'un composant existant
+        existing_widget = QWidget()
+        existing_layout = QFormLayout(existing_widget)
+        
+        # Liste des composants existants
+        component_combo = QComboBox()
+        
+        # Récupérer tous les noms de composants uniques
+        all_components = self.inventory_controller.get_all_components()
+        unique_components = sorted(list(set(comp["name"] for comp in all_components)))
+        
+        component_combo.addItems(unique_components)
+        existing_layout.addRow("Composant:", component_combo)
+        layout.addRow("", existing_widget)
+        
+        # Widget pour la création d'un nouveau composant
+        new_widget = QWidget()
+        new_layout = QFormLayout(new_widget)
+        
+        new_component_name = QLineEdit()
+        new_layout.addRow("Nom du composant:", new_component_name)
+        
+        new_component_desc = QLineEdit()
+        new_layout.addRow("Description (facultative):", new_component_desc)
+        
+        new_widget.setEnabled(False)
+        layout.addRow("", new_widget)
+        
+        # Connecter les boutons radio pour activer/désactiver les widgets
+        existing_radio.toggled.connect(lambda checked: existing_widget.setEnabled(checked))
+        new_radio.toggled.connect(lambda checked: new_widget.setEnabled(checked))
+        
+        # Quantité
+        quantity_spin = QSpinBox()
+        quantity_spin.setMinimum(1)
+        quantity_spin.setMaximum(100)
+        quantity_spin.setValue(1)
+        layout.addRow("Quantité:", quantity_spin)
+        
+        # Contrainte de couleur
+        constraint_group = QGroupBox("Contrainte de couleur")
+        constraint_layout = QVBoxLayout(constraint_group)
+        
+        # Options pour la contrainte de couleur
+        no_constraint_radio = QRadioButton("Aucune contrainte")
+        same_as_main_radio = QRadioButton("Même couleur que le produit")
+        fixed_color_radio = QRadioButton("Couleur fixe")
+        same_as_other_radio = QRadioButton("Même couleur qu'un autre composant")
+        
+        # Sélectionner par défaut
+        no_constraint_radio.setChecked(True)
+        
+        constraint_layout.addWidget(no_constraint_radio)
+        constraint_layout.addWidget(same_as_main_radio)
+        constraint_layout.addWidget(fixed_color_radio)
+        constraint_layout.addWidget(same_as_other_radio)
+        
+        # Options supplémentaires pour les contraintes
+        fixed_color_combo = QComboBox()
+        fixed_color_combo.addItems(sorted([c for c in COLORS if c != "Aléatoire"]))
+        fixed_color_combo.setEnabled(False)
+        
+        fixed_color_layout = QHBoxLayout()
+        fixed_color_layout.addWidget(QLabel("Couleur:"))
+        fixed_color_layout.addWidget(fixed_color_combo)
+        constraint_layout.addLayout(fixed_color_layout)
+        
+        # Référence à un autre composant
+        ref_combo = QComboBox()
+        ref_combo.setEnabled(False)
+        
+        # Récupérer les composants du produit sélectionné
+        product = current_item.data(Qt.UserRole)
+        for comp in product["components"]:
+            ref_combo.addItem(comp["name"])
+        
+        ref_layout = QHBoxLayout()
+        ref_layout.addWidget(QLabel("Référence:"))
+        ref_layout.addWidget(ref_combo)
+        constraint_layout.addLayout(ref_layout)
+        
+        # Activer/désactiver les options en fonction de la sélection
+        fixed_color_radio.toggled.connect(lambda checked: fixed_color_combo.setEnabled(checked))
+        same_as_other_radio.toggled.connect(lambda checked: ref_combo.setEnabled(checked))
+        
+        layout.addRow("", constraint_group)
+        
+        # Boutons
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        add_btn = QPushButton("Ajouter")
+        add_btn.clicked.connect(dialog.accept)
+        add_btn.setDefault(True)
+        
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(add_btn)
+        layout.addRow("", buttons)
+        
+        # Afficher le dialogue
+        if dialog.exec_() == QDialog.Accepted:
+            # Déterminer le nom du composant selon le choix de l'utilisateur
+            if existing_radio.isChecked():
+                component_name = component_combo.currentText()
+            else:
+                component_name = new_component_name.text().strip()
+                
+                # Si l'utilisateur a choisi de créer un nouveau composant
+                if component_name:
+                    component_description = new_component_desc.text().strip()
+                    # Créer le nouveau composant (avec un stock initial de 0)
+                    success = self.inventory_controller.add_new_component(component_name, {}, component_description)
+                    
+                    if not success:
+                        QMessageBox.warning(self, "Erreur", f"Impossible de créer le composant {component_name}.")
+                        return
+                else:
+                    QMessageBox.warning(self, "Erreur", "Le nom du composant ne peut pas être vide.")
+                    return
+            
+            quantity = quantity_spin.value()
+            
+            # Déterminer la contrainte de couleur
+            color_constraint = None
+            
+            if same_as_main_radio.isChecked():
+                color_constraint = "same_as_main"
+            elif fixed_color_radio.isChecked():
+                color_constraint = f"fixed:{fixed_color_combo.currentText()}"
+            elif same_as_other_radio.isChecked():
+                ref_component = ref_combo.currentText()
+                if ref_component:
+                    color_constraint = f"same_as:{ref_component}"
+            
+            # Ajouter le composant au produit
+            success = self.inventory_controller.add_component_to_product(
+                product_name, component_name, quantity, color_constraint)
+            
+            if not success:
+                QMessageBox.warning(self, "Erreur", 
+                                   f"Impossible d'ajouter {component_name} au produit {product_name}.")
+            else:
+                # Mettre à jour les données
+                self.load_data()
+                QMessageBox.information(self, "Succès", f"Composant '{component_name}' ajouté au produit '{product_name}'.")
+    
+    def remove_component_from_product(self):
+        """Retire un composant d'un produit"""
+        # Vérifier qu'un produit et un composant sont sélectionnés
+        current_product = self.products_list.currentItem()
+        if not current_product:
+            return
+        
+        product_name = current_product.text()
+        
+        # Vérifier si une ligne est sélectionnée dans le tableau des composants
+        current_row = self.components_detail_table.currentRow()
+        if current_row < 0:
+            QMessageBox.information(self, "Information", 
+                                   "Veuillez sélectionner un composant à retirer.")
+            return
+        
+        component_name = self.components_detail_table.item(current_row, 0).text()
+        
+        # Confirmation
+        if QMessageBox.question(self, "Confirmer le retrait", 
+                              f"Êtes-vous sûr de vouloir retirer le composant '{component_name}' du produit '{product_name}' ?",
+                              QMessageBox.Yes | QMessageBox.No) == QMessageBox.No:
+            return
+        
+        # Retirer le composant
+        success = self.inventory_controller.remove_component_from_product(product_name, component_name)
+        
+        if not success:
+            QMessageBox.warning(self, "Erreur", 
+                               f"Impossible de retirer {component_name} du produit {product_name}.")
+        else:
+            # Mettre à jour les données
+            self.load_data()
+    
+    def count_components(self):
+        """Compte le nombre total de composants en stock"""
+        components = self.inventory_controller.get_all_components()
+        return sum(comp["stock"] for comp in components)
+    
+    def count_products(self):
+        """Compte le nombre total de produits assemblés"""
+        products = self.inventory_controller.get_all_products()
+        return sum(sum(p["assembled_stock"].values()) for p in products)
